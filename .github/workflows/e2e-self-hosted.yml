@@ -1,0 +1,25 @@
+name: Full E2E
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: BookBench config file
+        required: true
+        default: bookbench.toml
+
+jobs:
+  all-engines:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install harness
+        run: python -m pip install -e .
+      - name: Environment check
+        run: bookbench -c "${{ inputs.config }}" doctor
+      - name: Run pipeline
+        run: bookbench -c "${{ inputs.config }}" run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bookbench-results
+          path: .bookbench/runs/

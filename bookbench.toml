@@ -1,0 +1,25 @@
+source = "fixtures/smoke.md"
+language = "en-US"
+title = "BookBench Smoke Test"
+profiles_dir = "profiles"
+work_root = ".bookbench/runs"
+cache_dir = ".bookbench/cache/voicerender"
+chapters = "all"
+max_replans = 3
+fail_fast = false
+
+# The starter ships one current Piper example. Add one RenderProfile per engine
+# and extend this list to make missing engine coverage a hard failure.
+required_engines = ["piper"]
+
+[speechscope]
+backend = "redux"
+device = "cpu"
+normalization = "basic-v1"
+# 0.0 is deliberate for an exact smoke gate. Real books may need a small tolerance.
+max_wer = 0.0
+max_cer = 0.0
+# "renderplan" compares ASR with the exact text sent to synthesis.
+# "source" compares ASR with the original source file and is only suitable when
+# written and spoken forms are intentionally identical.
+reference_mode = "renderplan"

@@ -1,0 +1,18 @@
+schema_version = 3
+
+[project]
+uuid = "d34d78bb-8d69-4dfa-9a5e-70819a1a025e"
+name = "bookbench"
+
+[ledgers.taskledger.mounts.data]
+storage = "external"
+root = "../ledger"
+
+[ledgers.taskledger.mounts.runtime]
+storage = "user-data"
+
+[ledgers.taskledger.mounts.logs]
+storage = "user-data"
+
+[ledgers.taskledger.mounts.indexes]
+storage = "cache"
