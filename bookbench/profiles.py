@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from collections.abc import Iterable
-from pathlib import Path
+import re
 import tomllib
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,9 +15,15 @@ class ProfileInfo:
     engines: tuple[str, ...]
 
     @property
+    def variant_label(self) -> str:
+        raw = self.label.lower()
+        label = re.sub(r"[^a-z0-9_.-]+", "-", raw).strip("._-")
+        return label or "profile"
+
+    @property
     def variant(self) -> str:
         digest = self.profile_id.removeprefix("sha256:")
-        return f"{self.label}--{digest[:12]}"
+        return f"{self.variant_label}--{digest[:12]}"
 
 
 def _label(path: Path) -> str:
@@ -60,6 +67,10 @@ class ProfileCase:
     @property
     def profile_label(self) -> str:
         return self.profile.label
+
+    @property
+    def variant_label(self) -> str:
+        return self.profile.variant_label
 
     @property
     def profile_id(self) -> str:

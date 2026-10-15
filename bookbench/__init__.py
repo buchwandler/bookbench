@@ -1,8 +1,8 @@
 """BookBench: end-to-end validation harness for the Buchwandler speech pipeline."""
 
-try:
-    from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
+try:
     __version__ = version("bookbench")
-except Exception:  # pragma: no cover - source checkout fallback
+except PackageNotFoundError:  # pragma: no cover - source checkout fallback
     __version__ = "0.1.dev0"

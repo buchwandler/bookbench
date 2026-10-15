@@ -1,26 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+import hashlib
 import json
-from pathlib import Path
+import platform
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
-from collections.abc import Iterable
 import uuid
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 from .config import Config
 from .profiles import ProfileCase, coverage, discover_profiles, inspect_profile
 from .rendertext import renderplan_text
 
-
-TOOLS = ("text2epub", "ssmdconvert", "utterplan", "voicerender", "audiocompose", "audioexport", "speechscope", "ffmpeg")
+VERSION_PROBES = {
+    "text2epub": ("text2epub", "version"),
+    "ssmdconvert": ("ssmdconvert", "--version"),
+    "utterplan": ("utterplan", "--version"),
+    "voicerender": ("voicerender", "--version"),
+    "audiocompose": ("audiocompose", "--version"),
+    "audioexport": ("audioexport", "--version"),
+    "speechscope": ("speechscope", "--version"),
+    "ffmpeg": ("ffmpeg", "-version"),
+}
+TOOLS = tuple(VERSION_PROBES)
 
 
 class PipelineError(RuntimeError):
     pass
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @dataclass(slots=True)
@@ -43,6 +59,29 @@ class ProfileResult:
     wer: float | None = None
     cer: float | None = None
     error: str | None = None
+    failed_stage: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    run_id: str
+    run_dir: Path
+    book_epub: Path
+    book: Path
+    export_dir: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileRunContext:
+    profile: ProfileCase
+    staged_profile: Path
+    variant_dir: Path
+    export_path: Path
+    listening_path: Path
+    validation_wav: Path
+    expected_text: Path
+    policy_path: Path
+    speechscope_report: Path
 
 
 class Harness:
@@ -51,6 +90,25 @@ class Harness:
         self.dry_run = dry_run
         self.run_dir: Path | None = None
         self.commands: list[CommandResult] = []
+        self._current_stage: str | None = None
+
+    def _record_command(self, result: CommandResult) -> None:
+        self.commands.append(result)
+        if self.run_dir is None:
+            return
+        with (self.run_dir / "commands.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"$ {shlex.join(result.argv)}\n")
+            fh.write("[stdout]\n")
+            if result.stdout:
+                fh.write(result.stdout)
+                if not result.stdout.endswith("\n"):
+                    fh.write("\n")
+            fh.write("[stderr]\n")
+            if result.stderr:
+                fh.write(result.stderr)
+                if not result.stderr.endswith("\n"):
+                    fh.write("\n")
+            fh.write(f"[exit={result.returncode} duration={result.duration_s:.3f}s]\n\n")
 
     def _run(self, argv: Iterable[str], *, check: bool = True) -> CommandResult:
         args = [str(x) for x in argv]
@@ -60,17 +118,16 @@ class Harness:
             self.commands.append(result)
             return result
         started = time.monotonic()
-        proc = subprocess.run(args, text=True, capture_output=True, check=False)
+        try:
+            proc = subprocess.run(args, text=True, capture_output=True, check=False)
+        except OSError as exc:
+            result = CommandResult(args, 127, time.monotonic() - started, "", str(exc))
+            self._record_command(result)
+            if check:
+                raise PipelineError(f"Command failed: {shlex.join(args)}\n{exc}") from exc
+            return result
         result = CommandResult(args, proc.returncode, time.monotonic() - started, proc.stdout, proc.stderr)
-        self.commands.append(result)
-        if self.run_dir is not None:
-            with (self.run_dir / "commands.log").open("a", encoding="utf-8") as fh:
-                fh.write(f"$ {shlex.join(args)}\n")
-                if proc.stdout:
-                    fh.write(proc.stdout.rstrip() + "\n")
-                if proc.stderr:
-                    fh.write(proc.stderr.rstrip() + "\n")
-                fh.write(f"[exit={proc.returncode} duration={result.duration_s:.3f}s]\n\n")
+        self._record_command(result)
         if check and proc.returncode != 0:
             detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
             raise PipelineError(f"Command failed: {shlex.join(args)}\n{detail}")
@@ -78,15 +135,28 @@ class Harness:
 
     def versions(self) -> dict[str, str | None]:
         out: dict[str, str | None] = {}
-        for tool in TOOLS:
-            exe = shutil.which(tool)
-            if exe is None:
+        for tool, argv in VERSION_PROBES.items():
+            if shutil.which(tool) is None:
                 out[tool] = None
                 continue
-            argv = [tool, "-version"] if tool == "ffmpeg" else [tool, "--version"]
-            proc = subprocess.run(argv, text=True, capture_output=True, check=False)
-            line = (proc.stdout or proc.stderr).splitlines()
-            out[tool] = line[0].strip() if line else f"exit={proc.returncode}"
+            started = time.monotonic()
+            try:
+                proc = subprocess.run(argv, text=True, capture_output=True, check=False)
+            except OSError as exc:
+                result = CommandResult(list(argv), 127, time.monotonic() - started, "", str(exc))
+                self._record_command(result)
+                out[tool] = f"probe_failed(exit=127): {exc}"
+                continue
+            result = CommandResult(list(argv), proc.returncode, time.monotonic() - started, proc.stdout, proc.stderr)
+            self._record_command(result)
+            output = (proc.stderr if proc.returncode != 0 else proc.stdout or proc.stderr).splitlines()
+            if proc.returncode != 0:
+                detail = output[0].strip() if output else "no output"
+                out[tool] = f"probe_failed(exit={proc.returncode}): {detail}"
+            elif output:
+                out[tool] = output[0].strip()
+            else:
+                out[tool] = "probe_failed(exit=0): no version output"
         return out
 
     def _profiles(self) -> list[ProfileCase]:
@@ -95,41 +165,191 @@ class Harness:
         return [ProfileCase(p.label, p) for p in discover_profiles(self.config.profiles_dir)]
 
     def doctor(self) -> dict:
-        profiles = self._profiles()
-        found, missing = coverage(profiles, self.config.required_engines)
-        return {
-            "tools": {tool: shutil.which(tool) for tool in TOOLS},
-            "profiles": [
-                {
-                    "path": str(p.path),
-                    "label": p.label,
-                    "profile_label": p.profile_label,
-                    "profile_id": p.profile_id,
-                    "variant": p.variant,
-                    "engines": list(p.engines),
+        tool_paths = {tool: shutil.which(tool) for tool in TOOLS}
+        tool_versions = self.versions()
+        tools = {
+            tool: {
+                "path": tool_paths[tool],
+                "available": tool_paths[tool] is not None,
+                "version": tool_versions[tool],
+                "version_probe_failed": isinstance(tool_versions[tool], str)
+                and tool_versions[tool].startswith("probe_failed("),
+            }
+            for tool in TOOLS
+        }
+
+        if self.config.voices:
+            candidates = [(voice.name, voice.profile) for voice in self.config.voices]
+        else:
+            suffix = ".renderprofile.toml"
+            candidates = [
+                (path.name[: -len(suffix)], path) for path in sorted(self.config.profiles_dir.glob(f"*{suffix}"))
+            ]
+
+        profiles = []
+        variant_paths: dict[str, list[str]] = {}
+        found_engines: set[str] = set()
+        for label, path in candidates:
+            diagnostic = {
+                "path": str(path),
+                "label": label,
+                "exists": path.is_file(),
+                "valid": False,
+                "profile_id": None,
+                "variant_label": None,
+                "variant": None,
+                "engines": [],
+                "staged_profile_target": None,
+                "validation": {"status": "not_run", "returncode": None, "stdout": "", "stderr": ""},
+            }
+            try:
+                info = inspect_profile(path)
+            except (OSError, ValueError) as exc:
+                diagnostic["error"] = str(exc)
+            else:
+                profile = ProfileCase(label, info)
+                diagnostic.update(
+                    {
+                        "valid": True,
+                        "profile_id": profile.profile_id,
+                        "variant_label": profile.variant_label,
+                        "variant": profile.variant,
+                        "engines": list(profile.engines),
+                        "staged_profile_target": str(
+                            self.config.work_root
+                            / "<run-id>"
+                            / "book.ssmdbook"
+                            / "renderplan"
+                            / "_bookbench_profiles"
+                            / profile.variant
+                            / profile.path.name
+                        ),
+                    }
+                )
+                found_engines.update(profile.engines)
+                variant_paths.setdefault(profile.variant, []).append(str(path))
+            if tool_paths["voicerender"] is None:
+                diagnostic["validation"] = {
+                    "status": "unavailable",
+                    "returncode": None,
+                    "stdout": "",
+                    "stderr": "voicerender is not available on PATH",
                 }
-                for p in profiles
-            ],
-            "engine_coverage": {
-                "found": sorted(found),
-                "required": sorted(self.config.required_engines),
-                "missing": sorted(missing),
-            },
+            else:
+                result = subprocess.run(
+                    ["voicerender", "profile", "validate", str(path)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                diagnostic["validation"] = {
+                    "status": "passed" if result.returncode == 0 else "failed",
+                    "returncode": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            profiles.append(diagnostic)
+
+        duplicate_variants = [
+            {"variant": variant, "profiles": paths}
+            for variant, paths in sorted(variant_paths.items())
+            if len(paths) > 1
+        ]
+        source = {"path": str(self.config.source), "exists": self.config.source.is_file()}
+        work_root = {"path": str(self.config.work_root), "writable": False, "error": None}
+        try:
+            self.config.work_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=self.config.work_root, prefix=".bookbench-doctor-"):
+                pass
+        except OSError as exc:
+            work_root["error"] = str(exc)
+        else:
+            work_root["writable"] = True
+
+        missing_engines = set(self.config.required_engines) - found_engines
+        engine_coverage = {
+            "found": sorted(found_engines),
+            "required": sorted(self.config.required_engines),
+            "missing": sorted(missing_engines),
+        }
+        profile_checks_pass = bool(profiles) and all(
+            profile["valid"] and profile["validation"]["status"] == "passed" for profile in profiles
+        )
+        tools_pass = all(
+            item["available"] and item["version"] is not None and not item["version_probe_failed"]
+            for item in tools.values()
+        )
+        return {
+            "ok": (
+                tools_pass
+                and profile_checks_pass
+                and not duplicate_variants
+                and source["exists"]
+                and work_root["writable"]
+                and not missing_engines
+            ),
+            "tools": tools,
+            "profiles": profiles,
+            "duplicate_variants": duplicate_variants,
+            "source": source,
+            "work_root": work_root,
+            "engine_coverage": engine_coverage,
         }
 
     def _chapter_args(self) -> list[str]:
         return [] if self.config.chapters == "all" else ["--chapters", self.config.chapters]
 
-    def _render_engine(self, book: Path, profile: ProfileCase, export_dir: Path) -> ProfileResult:
-        self._run(["voicerender", "profile", "validate", profile.path])
-        self._run(["utterplan", "render-book", book, "--profile", profile.path, *self._chapter_args()])
+    def _stage_profile(self, book: Path, profile: ProfileCase) -> Path:
+        staged = book / "renderplan" / "_bookbench_profiles" / profile.variant / profile.path.name
+        if self.dry_run:
+            return staged
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        source_bytes = profile.path.read_bytes()
+        if staged.exists() and staged.read_bytes() != source_bytes:
+            raise PipelineError(f"Staged RenderProfile collision: {staged}")
+        staged.write_bytes(source_bytes)
+        return staged
 
+    def _validate_profile(self, profile: ProfileCase) -> None:
+        self._current_stage = "profile_validate"
+        self._run(["voicerender", "profile", "validate", profile.path])
+
+    def _profile_run_context(self, run: RunContext, profile: ProfileCase, staged_profile: Path) -> ProfileRunContext:
+        export_stem = profile.label
+        return ProfileRunContext(
+            profile=profile,
+            staged_profile=staged_profile,
+            variant_dir=run.book / "renderplan" / profile.variant,
+            export_path=run.export_dir / f"{export_stem}.m4b",
+            listening_path=run.export_dir / f"{export_stem}.listen.mp3",
+            validation_wav=run.export_dir / f"{export_stem}.validation.wav",
+            expected_text=run.export_dir / f"{export_stem}.expected.txt",
+            policy_path=run.export_dir / f"{export_stem}.speechscope-policy.json",
+            speechscope_report=run.export_dir / f"{export_stem}.speechscope.json",
+        )
+
+    def _build_renderplan(self, run: RunContext, context: ProfileRunContext) -> None:
+        self._current_stage = "renderplan"
+        self._run(
+            [
+                "utterplan",
+                "render-book",
+                run.book,
+                "--profile",
+                context.staged_profile,
+                "--variant",
+                context.profile.variant_label,
+                *self._chapter_args(),
+            ]
+        )
+
+    def _render_audio(self, run: RunContext, context: ProfileRunContext) -> None:
         render_cmd = [
             "voicerender",
             "render-book",
-            book,
+            run.book,
             "--variant",
-            profile.variant,
+            context.profile.variant,
             "--cache-dir",
             self.config.cache_dir,
             "--emphasis-policy",
@@ -138,57 +358,66 @@ class Harness:
             *self._chapter_args(),
         ]
         for attempt in range(self.config.max_replans + 1):
+            self._current_stage = "voicerender"
             rendered = self._run(render_cmd, check=False)
             if rendered.returncode == 0:
-                break
+                return
             if attempt >= self.config.max_replans:
                 raise PipelineError(rendered.stderr.strip() or rendered.stdout.strip() or "VoiceRender failed")
-            replanned = self._run(
-                [
-                    "utterplan",
-                    "replan-book",
-                    book,
-                    "--variant",
-                    profile.variant,
-                    *self._chapter_args(),
-                ],
-                check=False,
-            )
-            if replanned.returncode != 0:
-                detail = rendered.stderr.strip() or rendered.stdout.strip()
-                replan_detail = replanned.stderr.strip() or replanned.stdout.strip()
-                raise PipelineError(
-                    f"VoiceRender failed and no valid replan was available.\nrender: {detail}\nreplan: {replan_detail}"
-                )
+            self._replan_if_needed(run, context, rendered)
 
+    def _replan_if_needed(self, run: RunContext, context: ProfileRunContext, rendered: CommandResult) -> None:
+        self._current_stage = "replan"
+        replanned = self._run(
+            [
+                "utterplan",
+                "replan-book",
+                run.book,
+                "--variant",
+                context.profile.variant,
+                *self._chapter_args(),
+            ],
+            check=False,
+        )
+        if replanned.returncode != 0:
+            detail = rendered.stderr.strip() or rendered.stdout.strip()
+            replan_detail = replanned.stderr.strip() or replanned.stdout.strip()
+            raise PipelineError(
+                f"VoiceRender failed and no valid replan was available.\nrender: {detail}\nreplan: {replan_detail}"
+            )
+
+    def _compose(self, run: RunContext, context: ProfileRunContext) -> None:
+        self._current_stage = "compose"
         self._run(
             [
                 "audiocompose",
                 "compose-book",
-                book,
+                run.book,
                 "--variant",
-                profile.variant,
+                context.profile.variant,
                 "--json",
                 *self._chapter_args(),
             ]
         )
 
-        export_dir.mkdir(parents=True, exist_ok=True)
-        exported = export_dir / f"{profile.label}.m4b"
+    def _export(self, run: RunContext, context: ProfileRunContext) -> None:
+        self._current_stage = "export"
+        run.export_dir.mkdir(parents=True, exist_ok=True)
         self._run(
             [
                 "audioexport",
                 "export-book",
-                book,
+                run.book,
                 "--variant",
-                profile.variant,
+                context.profile.variant,
                 "--output",
-                exported,
+                context.export_path,
                 *self._chapter_args(),
             ]
         )
 
-        listening = export_dir / f"{profile.label}.listen.mp3"
+    def _make_listening_copy(self, context: ProfileRunContext) -> None:
+        self._current_stage = "listen_encode"
         self._run(
             [
                 "ffmpeg",
@@ -197,18 +426,19 @@ class Harness:
                 "error",
                 "-y",
                 "-i",
-                exported,
+                context.export_path,
                 "-map",
                 "0:a:0",
                 "-codec:a",
                 "libmp3lame",
                 "-q:a",
                 "4",
-                listening,
+                context.listening_path,
             ]
         )
 
-        decoded = export_dir / f"{profile.label}.validation.wav"
+    def _decode_for_validation(self, context: ProfileRunContext) -> None:
+        self._current_stage = "validation_decode"
         self._run(
             [
                 "ffmpeg",
@@ -217,7 +447,7 @@ class Harness:
                 "error",
                 "-y",
                 "-i",
-                exported,
+                context.export_path,
                 "-map",
                 "0:a:0",
                 "-ac",
@@ -226,21 +456,23 @@ class Harness:
                 "16000",
                 "-c:a",
                 "pcm_s16le",
-                decoded,
+                context.validation_wav,
             ]
         )
 
+    def _build_reference(self, context: ProfileRunContext) -> None:
+        self._current_stage = "reference_extract"
         if self.dry_run:
             expected_text = "Dry-run: expected text would be derived from the selected reference mode.\n"
         elif self.config.speechscope.reference_mode == "source":
             expected_text = self.config.source.read_text(encoding="utf-8")
         else:
-            expected_text = renderplan_text(book / "renderplan" / profile.variant)
-        expected = export_dir / f"{profile.label}.expected.txt"
-        expected.write_text(expected_text, encoding="utf-8")
+            expected_text = renderplan_text(context.variant_dir)
+        context.expected_text.write_text(expected_text, encoding="utf-8")
 
-        policy = export_dir / f"{profile.label}.speechscope-policy.json"
-        policy.write_text(
+    def _run_speechscope(self, context: ProfileRunContext) -> tuple[CommandResult, dict]:
+        self._current_stage = "speechscope"
+        context.policy_path.write_text(
             json.dumps(
                 {
                     "schema_version": "1",
@@ -253,15 +485,14 @@ class Harness:
             + "\n",
             encoding="utf-8",
         )
-        report = export_dir / f"{profile.label}.speechscope.json"
         cmd = [
             "speechscope",
             "analyze",
-            decoded,
+            context.validation_wav,
             "--text-file",
-            expected,
+            context.expected_text,
             "--thresholds",
-            policy,
+            context.policy_path,
             "--backend",
             self.config.speechscope.backend,
             "--device",
@@ -271,14 +502,29 @@ class Harness:
             "--format",
             "json",
             "--json",
-            report,
+            context.speechscope_report,
         ]
         if self.config.speechscope.model:
             cmd.extend(["--model", self.config.speechscope.model])
         checked = self._run(cmd, check=False)
         if checked.returncode not in (0, 1):
             raise PipelineError(checked.stderr.strip() or checked.stdout.strip() or "SpeechScope failed")
-        data = {} if self.dry_run else json.loads(report.read_text(encoding="utf-8"))
+        data = {} if self.dry_run else json.loads(context.speechscope_report.read_text(encoding="utf-8"))
+        return checked, data
+
+    def _render_engine(self, run: RunContext, profile: ProfileCase) -> ProfileResult:
+        self._validate_profile(profile)
+        self._current_stage = "renderplan"
+        staged_profile = self._stage_profile(run.book, profile)
+        context = self._profile_run_context(run, profile, staged_profile)
+        self._build_renderplan(run, context)
+        self._render_audio(run, context)
+        self._compose(run, context)
+        self._export(run, context)
+        self._make_listening_copy(context)
+        self._decode_for_validation(context)
+        self._build_reference(context)
+        checked, data = self._run_speechscope(context)
         metrics = data.get("metrics") or {}
         evaluation = data.get("evaluation") or {}
         if self.dry_run:
@@ -294,14 +540,46 @@ class Harness:
             variant=profile.variant,
             engines=list(profile.engines),
             status=status,
-            export=str(exported),
-            speechscope_report=str(report),
+            export=str(context.export_path),
+            speechscope_report=str(context.speechscope_report),
             wer=metrics.get("wer"),
             cer=metrics.get("cer"),
             error=None if status == "pass" else "SpeechScope threshold failure",
+            failed_stage="speechscope" if status != "pass" else None,
+        )
+
+    def _write_provenance(self) -> None:
+        if self.run_dir is None or self._run_metadata is None:
+            return
+        for profile in self._profile_metadata:
+            staged = Path(profile["staged_path"])
+            profile["staged_sha256"] = _file_sha256(staged) if staged.is_file() else None
+        (self.run_dir / "run.json").write_text(json.dumps(self._run_metadata, indent=2) + "\n", encoding="utf-8")
+        (self.run_dir / "profiles.json").write_text(
+            json.dumps(self._profile_metadata, indent=2) + "\n", encoding="utf-8"
         )
 
     def run(self, *, run_id: str | None = None) -> tuple[Path, list[ProfileResult]]:
+        self.run_dir = None
+        self.commands = []
+        self._current_stage = None
+        self._run_error = None
+        self._run_metadata = None
+        self._profile_metadata = []
+        self._run_started_at = datetime.now(UTC)
+        try:
+            return self._run_pipeline(run_id=run_id)
+        except Exception as exc:
+            self._run_error = str(exc)
+            raise
+        finally:
+            if self.run_dir is not None and self._run_metadata is not None:
+                self._run_metadata["end_timestamp"] = datetime.now(UTC).isoformat()
+                self._run_metadata["failed_stage"] = self._current_stage if self._run_error else None
+                self._run_metadata["error"] = self._run_error
+                self._write_provenance()
+
+    def _run_pipeline(self, *, run_id: str | None = None) -> tuple[Path, list[ProfileResult]]:
         profiles = self._profiles()
         if not profiles:
             raise PipelineError(f"No *.renderprofile.toml files found in {self.config.profiles_dir}")
@@ -313,16 +591,69 @@ class Harness:
         if not self.config.source.is_file():
             raise PipelineError(f"Source not found: {self.config.source}")
 
-        run_id = run_id or (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+        run_id = run_id or (datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
         self.run_dir = self.config.work_root / run_id
         self.run_dir.mkdir(parents=True, exist_ok=False)
+
+        from . import __version__
+
+        config_path = self.config.config_path
+        self._run_metadata = {
+            "run_id": run_id,
+            "bookbench_version": __version__,
+            "python_version": platform.python_version(),
+            "platform": platform.platform(),
+            "config_path": str(config_path) if config_path is not None else None,
+            "config_sha256": (_file_sha256(config_path) if config_path is not None and config_path.is_file() else None),
+            "source_path": str(self.config.source),
+            "source_sha256": _file_sha256(self.config.source),
+            "selected_chapters": self.config.chapters,
+            "dry_run": self.dry_run,
+            "start_timestamp": self._run_started_at.isoformat(),
+            "end_timestamp": None,
+            "failed_stage": None,
+            "error": None,
+        }
+        self._profile_metadata = []
+        for profile in profiles:
+            staged = (
+                self.run_dir
+                / "book.ssmdbook"
+                / "renderplan"
+                / "_bookbench_profiles"
+                / profile.variant
+                / profile.path.name
+            )
+            self._profile_metadata.append(
+                {
+                    "candidate_label": profile.label,
+                    "profile_label": profile.profile_label,
+                    "original_path": str(profile.path),
+                    "original_sha256": _file_sha256(profile.path),
+                    "profile_id": profile.profile_id,
+                    "variant_label": profile.variant_label,
+                    "variant": profile.variant,
+                    "engines": list(profile.engines),
+                    "staged_path": str(staged),
+                    "staged_sha256": None,
+                }
+            )
+        self._write_provenance()
         export_dir = self.run_dir / "exports"
         book_epub = self.run_dir / "source.epub"
         book = self.run_dir / "book.ssmdbook"
+        run_context = RunContext(
+            run_id=run_id,
+            run_dir=self.run_dir,
+            book_epub=book_epub,
+            book=book,
+            export_dir=export_dir,
+        )
 
         versions = {} if self.dry_run else self.versions()
         (self.run_dir / "versions.json").write_text(json.dumps(versions, indent=2) + "\n", encoding="utf-8")
 
+        self._current_stage = "text2epub"
         self._run(
             [
                 "text2epub",
@@ -336,6 +667,7 @@ class Harness:
                 self.config.language,
             ]
         )
+        self._current_stage = "ssmdconvert"
         self._run(
             [
                 "ssmdconvert",
@@ -350,21 +682,26 @@ class Harness:
                 book,
             ]
         )
+        self._current_stage = "ssmdconvert"
         self._run(["ssmdconvert", "book", "validate", book, "--json"])
+        self._current_stage = "ssmdconvert"
         self._run(["ssmdconvert", "txt", book, "-o", self.run_dir / "prepared.txt", "--spacy", "off"])
+        self._current_stage = "renderplan"
         self._run(["utterplan", "compile-book", book, "--spacy", "off", *self._chapter_args()])
 
         results: list[ProfileResult] = []
         for profile in profiles:
+            self._current_stage = None
             try:
-                result = self._render_engine(book, profile, export_dir)
-            except Exception as exc:  # continue across engines by default
+                result = self._render_engine(run_context, profile)
+            except Exception as exc:  # noqa: BLE001
                 result = ProfileResult(
                     profile=profile.label,
                     variant=profile.variant,
                     engines=list(profile.engines),
                     status="error",
                     error=str(exc),
+                    failed_stage=self._current_stage,
                 )
                 results.append(result)
                 if self.config.fail_fast:
@@ -374,6 +711,7 @@ class Harness:
                 if self.config.fail_fast and result.status != "pass":
                     break
 
+        self._current_stage = None
         summary = {
             "run_id": run_id,
             "source": str(self.config.source),

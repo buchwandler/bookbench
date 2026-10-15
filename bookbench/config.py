@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-import tomllib
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +36,7 @@ class Config:
     fail_fast: bool = False
     speechscope: SpeechScopeConfig = field(default_factory=SpeechScopeConfig)
     voices: tuple[VoiceCandidate, ...] = ()
+    config_path: Path | None = None
 
 
 def _resolve(base: Path, value: str | Path) -> Path:
@@ -56,7 +57,7 @@ def load_config(path: str | Path) -> Config:
         raise ValueError("max_replans must be >= 0")
     voices_data = data.get("voices", [])
     if not isinstance(voices_data, list):
-        raise ValueError("voices must be an array of tables")
+        raise TypeError("voices must be an array of tables")
     voices = tuple(
         VoiceCandidate(name=str(item["name"]), profile=_resolve(base, item["profile"])) for item in voices_data
     )
@@ -85,4 +86,5 @@ def load_config(path: str | Path) -> Config:
             max_cer=float(speech.get("max_cer", 0.0)),
             reference_mode=reference_mode,
         ),
+        config_path=path,
     )

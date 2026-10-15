@@ -29,8 +29,10 @@ covers the export layer instead of stopping before it.
 
 The literal source is not always the literal spoken form. Written text can be
 normalized (`5 kg` -> a spoken form), SSMD can carry substitutions, and UtterPlan
-produces the exact speech requests consumed by the renderer. Therefore the default
-acoustic oracle is the concatenation of `kind = "speech"` RenderPlan flow items.
+produces the exact speech requests consumed by the renderer. BookBench reads chapter
+order from `renderplan-set.toml` when available, then concatenates `kind = "speech"`
+RenderPlan flow items in that order. It uses filename order only for older workspaces
+without a RenderPlan set.
 Set `speechscope.reference_mode = "source"` only for fixtures where written and
 spoken forms are intentionally identical.
 
@@ -65,16 +67,14 @@ engine.
 
 Each run is isolated under `.bookbench/runs/<run-id>/` and contains:
 
-- `versions.json` — active CLI versions
-- `commands.log` — exact commands, stdout/stderr, exit status, duration
-- `source.epub` and `book.ssmdbook/` — intermediate artifacts
-- `prepared.txt` — SSMD text projection for inspection
-- all generated UtterPlan/RenderPlan/VoiceRender/AudioCompose/AudioExport artifacts
-- exported `.m4b`
-- decoded validation `.wav`
-- exact expected transcript per profile
-- SpeechScope JSON report per profile
-- `summary.json` — cross-engine pass/fail result
+- `run.json` with BookBench, Python, and platform versions, config and source paths and SHA256 values, selected chapters, dry-run state, and start/end timestamps
+- `profiles.json` with candidate and source profile identities, original and staged hashes and paths, canonical variant labels, full variants, and engines
+- `versions.json` with active CLI versions and visible version-probe failures
+- `commands.log` with each executed command's argv, separate stdout/stderr, exit status, and duration
+- `source.epub`, `book.ssmdbook/`, `prepared.txt`, and generated UtterPlan, RenderPlan, VoiceRender, AudioCompose, and AudioExport artifacts
+- exported `.m4b`, decoded validation `.wav`, browser listening copy, expected transcript, and SpeechScope JSON report per profile
+- `summary.json` with candidate results and failure stages
+- `listen.html` with full variants, WER/CER, artifact links, and per-candidate failure details
 
 ## Engine matrix
 
@@ -116,15 +116,16 @@ for Piper, not the other four model/profile assets). Then run:
 bookbench -c bookbench-voice-compare.toml compare
 ```
 
-Open the `listen.html` path printed by BookBench. Each successful candidate has an
-M4B export, a browser-friendly MP3 listening copy, and a SpeechScope validation report.
-The HTML report is generated even if some candidates fail. WER/CER are recognition
-metrics, not perceptual voice quality scores. No real synthesis runs in unit tests.
-
+Open the `listen.html` path printed by BookBench. Each candidate row includes the full
+execution variant, engine, WER/CER, failure stage, listening copy, and links to its M4B
+export, expected transcript, and SpeechScope JSON when those artifacts are inside the run.
+The HTML report is generated even if some candidates fail and preserves configured profile
+order. WER/CER are acoustic transcript-validation measures, not perceptual voice-quality
+scores or a ranking. No real synthesis runs in unit tests.
 ## Command split
 
 - `bookbench run` validates every RenderProfile discovered in `profiles_dir` (or the explicit voice cases when present).
 - `bookbench compare` requires at least two `[[voices]]` entries and is the TOML-driven A/B/n listening workflow.
-- `bookbench doctor` checks executable availability, profile identity, and required-engine coverage without synthesis.
+- `bookbench doctor` returns structured diagnostics for tool paths and versions, RenderProfile validation, canonical variants and staging targets, duplicate identities, source availability, writable work root, and required-engine coverage without synthesis.
 
 A comparison label is presentation only. The underlying UtterPlan/VoiceRender variant is always derived from the actual RenderProfile filename and canonical `profile_id`, so renaming a candidate in TOML cannot change pipeline identity.

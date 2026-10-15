@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 from bookbench.config import load_config
@@ -34,6 +33,9 @@ def test_listening_report(tmp_path):
         wer=0.0,
         cer=0.0,
         error=None,
+        variant="voice-a--1234567890ab",
+        failed_stage=None,
+        speechscope_report=str(tmp_path / "exports/voice-a.speechscope.json"),
         export=str(tmp_path / "exports/voice-a.m4b"),
     )
     path = build_listening_report(tmp_path, [result])
@@ -41,3 +43,46 @@ def test_listening_report(tmp_path):
     assert "exports/voice-a.listen.mp3" in text
     assert "voice-a" in text
     assert "BookBench" in text
+    assert "voice-a--1234567890ab" in text
+    assert 'href="exports/voice-a.m4b">M4B export</a>' in text
+    assert 'href="exports/voice-a.speechscope.json">SpeechScope JSON</a>' in text
+    assert 'href="exports/voice-a.expected.txt">Expected transcript</a>' in text
+    assert "acoustic transcript agreement" in text
+    assert "subjective voice-quality scores" in text
+
+
+def test_listening_report_orders_candidates_and_escapes_failure_details(tmp_path):
+    results = [
+        SimpleNamespace(
+            profile="Candidate <1>",
+            variant="piper--full-identity",
+            engines=["piper"],
+            status="error",
+            wer=None,
+            cer=0.125,
+            failed_stage="renderplan",
+            error="failure <details>",
+            export=str(tmp_path / "exports/first.m4b"),
+            speechscope_report=str(tmp_path / "exports/first.speechscope.json"),
+        ),
+        SimpleNamespace(
+            profile="Candidate 2",
+            variant="other--full-identity",
+            engines=["other"],
+            status="pass",
+            wer=0.0,
+            cer=0.0,
+            failed_stage=None,
+            error=None,
+            export=str(tmp_path / "exports/second.m4b"),
+            speechscope_report=str(tmp_path / "exports/second.speechscope.json"),
+        ),
+    ]
+
+    text = build_listening_report(tmp_path, results).read_text(encoding="utf-8")
+
+    assert text.index("Candidate &lt;1&gt;") < text.index("Candidate 2")
+    assert "piper--full-identity" in text
+    assert "renderplan" in text
+    assert "failure &lt;details&gt;" in text
+    assert "Candidate <1>" not in text

@@ -1,16 +1,28 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 
 def renderplan_text(variant_dir: str | Path) -> str:
-    """Return the exact speech-request text, in generated chapter/flow order."""
+    """Return exact speech-request text in RenderPlan-set chapter order when available."""
     variant_dir = Path(variant_dir)
-    chunks: list[str] = []
-    plans = sorted(variant_dir.glob("chapter-*.renderplan.toml"))
+    set_path = variant_dir / "renderplan-set.toml"
+    if set_path.is_file():
+        renderplan_set = tomllib.loads(set_path.read_text(encoding="utf-8"))
+        chapters = renderplan_set.get("chapter", [])
+        plans = []
+        for chapter in chapters:
+            renderplan = chapter.get("renderplan") if isinstance(chapter, dict) else None
+            if not isinstance(renderplan, str):
+                raise TypeError(f"Invalid chapter reference in {set_path}")
+            plans.append(variant_dir / renderplan)
+    else:
+        plans = sorted(variant_dir.glob("chapter-*.renderplan.toml"))
     if not plans:
         raise FileNotFoundError(f"No chapter RenderPlans found under {variant_dir}")
+
+    chunks: list[str] = []
     for plan in plans:
         data = tomllib.loads(plan.read_text(encoding="utf-8"))
         for item in data.get("flow", []):

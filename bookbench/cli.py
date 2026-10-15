@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from .config import load_config
 from .runner import Harness, PipelineError
@@ -36,9 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             data = harness.doctor()
             print(json.dumps(data, indent=2))
-            missing_tools = [name for name, value in data["tools"].items() if value is None]
-            missing_engines = data["engine_coverage"]["missing"]
-            return 1 if missing_tools or missing_engines or not data["profiles"] else 0
+            return 0 if data["ok"] else 1
         run_dir, results = harness.run(run_id=args.run_id)
         print(f"Run: {run_dir}")
         print(f"Listening report: {run_dir / 'listen.html'}")
