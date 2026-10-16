@@ -1,6 +1,6 @@
 default_role = "narrator"
 format = "renderprofile"
-profile_id = "sha256:59cfb22f4ef069938a89e25035b1ad9b9b56431d567081cb685488e4455d6963"
+profile_id = "sha256:e21da180bbacd8b01dbd34dfd5a1c32720107a0bfbe31d0bd1b742a855203240"
 schema_version = 1
 
 [pauses]
@@ -30,9 +30,23 @@ steps = 5
 voice_level = "off"
 
 [roles.narrator.binding.renderer_metadata]
+capacity_policy_revision = "supertonic-3-input-512-v1"
 frontend = "supertonicsynth"
+max_input_tokens = 512
 pronunciation = "unsupported"
 source_revision = "aafc6e32416a594460b32413efc49d7fe4ce6d46"
+
+[roles.narrator.binding.renderer_metadata.capacity]
+guarantee = "hard"
+maximum = 512
+metric = "model_tokens"
+
+[roles.narrator.capacity]
+
+[roles.narrator.capacity.renderer]
+guarantee = "hard"
+maximum = 512
+metric = "model_tokens"
 
 [roles.narrator.requirements]
 frontend = "supertonicsynth"
