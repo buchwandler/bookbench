@@ -13,6 +13,7 @@ class ProfileInfo:
     label: str
     profile_id: str
     engines: tuple[str, ...]
+    targets: tuple[tuple[str, str], ...] = ()
 
     @property
     def variant_label(self) -> str:
@@ -38,15 +39,25 @@ def inspect_profile(path: str | Path) -> ProfileInfo:
     if not profile_id.startswith("sha256:") or len(profile_id.removeprefix("sha256:")) < 12:
         raise ValueError(f"{path}: missing/invalid profile_id")
     engines: set[str] = set()
+    targets: set[tuple[str, str]] = set()
     for role in (data.get("roles") or {}).values():
         if isinstance(role, dict):
             binding = role.get("binding") or {}
             renderer = binding.get("renderer") if isinstance(binding, dict) else None
             if renderer:
                 engines.add(str(renderer))
+                target_id = binding.get("target_id")
+                if isinstance(target_id, str) and target_id:
+                    targets.add((str(renderer), target_id))
     if not engines:
         raise ValueError(f"{path}: no roles.*.binding.renderer found")
-    return ProfileInfo(path=path, label=_label(path), profile_id=profile_id, engines=tuple(sorted(engines)))
+    return ProfileInfo(
+        path=path,
+        label=_label(path),
+        profile_id=profile_id,
+        engines=tuple(sorted(engines)),
+        targets=tuple(sorted(targets)),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +96,11 @@ class ProfileCase:
     @property
     def engines(self) -> tuple[str, ...]:
         return self.profile.engines
+
+
+    @property
+    def targets(self) -> tuple[tuple[str, str], ...]:
+        return self.profile.targets
 
 
 def discover_profiles(directory: str | Path) -> list[ProfileInfo]:

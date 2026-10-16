@@ -15,13 +15,13 @@ PROFILE_ID = "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890a
 def _write_profile(path: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = (
-        f'# Exact profile bytes\nprofile_id = "{PROFILE_ID}"\n\n[roles.narrator.binding]\nrenderer = "piper"\n'
+        f'# Exact profile bytes\nprofile_id = "{PROFILE_ID}"\n\n[roles.narrator.binding]\nrenderer = "piper"\ntarget_id = "en_US-amy-medium"\n'
     ).encode()
     path.write_bytes(content)
     return content
 
 
-def _config(tmp_path: Path, profile_path: Path) -> Config:
+def _config(tmp_path: Path, profile_path: Path, *, max_replans: int = 3) -> Config:
     source = tmp_path / "source.md"
     source.write_text("# Smoke fixture\n", encoding="utf-8")
     config_path = tmp_path / "bookbench.toml"
@@ -42,9 +42,74 @@ def _config(tmp_path: Path, profile_path: Path) -> Config:
         cache_dir=tmp_path / "cache",
         required_engines=("piper",),
         voices=(VoiceCandidate(name="voice-a-candidate", profile=profile_path),),
+        max_replans=max_replans,
         config_path=config_path,
     )
 
+
+
+
+def _failure_item(
+    *,
+    chapter_id="chapter-0001",
+    render_plan_id="render-plan-0001",
+    error_code="preflight.reject",
+    error_message="unknown capacity",
+    replan_required=False,
+):
+    return {
+        "id": chapter_id,
+        "render_plan_id": render_plan_id,
+        "status": "failed",
+        "error_code": error_code,
+        "error_message": error_message,
+        "replan_required": replan_required,
+        "preflight_report": "chapter-0001/preflight.toml",
+    }
+
+
+def _run_voice_render_scenario(
+    tmp_path,
+    monkeypatch,
+    render_results,
+    *,
+    max_replans=3,
+    replan_returncode=0,
+):
+    import bookbench.runner as runner_module
+
+    profile_path = tmp_path / "profiles" / "piper.renderprofile.toml"
+    _write_profile(profile_path)
+    harness = Harness(_config(tmp_path, profile_path, max_replans=max_replans))
+    monkeypatch.setattr(harness, "versions", dict)
+    monkeypatch.setattr(runner_module, "renderplan_text", lambda _variant_dir: "Expected speech.\n")
+    queued_results = iter(render_results)
+    commands = []
+
+    def fake_run(argv, *, check=True):
+        args = [str(value) for value in argv]
+        if args[:2] == ["voicerender", "render-book"]:
+            response = next(queued_results, (0, "", ""))
+            result = CommandResult(args, response[0], 0.0, response[1], response[2])
+        elif args[:2] == ["utterplan", "replan-book"]:
+            result = CommandResult(args, replan_returncode, 0.0, "", "replan rejected" if replan_returncode else "")
+        else:
+            result = CommandResult(args, 0, 0.0, "", "")
+        if args[:2] == ["speechscope", "analyze"]:
+            report_path = Path(args[args.index("--json") + 1])
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(json.dumps({"metrics": {}, "evaluation": {"status": "pass"}}), encoding="utf-8")
+        harness.commands.append(result)
+        commands.append(result)
+        return result
+
+    monkeypatch.setattr(harness, "_run", fake_run)
+    run_dir, results = harness.run(run_id="strict-voice-render")
+    return harness, run_dir, results, commands
+
+
+def _render_failure(items):
+    return 1, json.dumps({"items": items}), ""
 
 def test_stage_profile_is_byte_exact_inside_renderplan_and_idempotent(tmp_path):
     profile_path = tmp_path / "profiles" / "My Voice!.renderprofile.toml"
@@ -103,6 +168,7 @@ def test_external_renderprofile_is_staged_before_utterplan(tmp_path, monkeypatch
             render_attempts += 1
             if render_attempts == 1:
                 result.returncode = 1
+                result.stdout = json.dumps({"items": [_failure_item(error_code="preflight.replan", error_message="capacity overflow", replan_required=True)]})
         return result
 
     monkeypatch.setattr(harness, "_run", run_with_replan)
@@ -130,6 +196,127 @@ def test_external_renderprofile_is_staged_before_utterplan(tmp_path, monkeypatch
     assert {args[args.index("--variant") + 1] for args in downstream} == {profile.variant}
 
 
+
+
+
+def test_hard_voicerender_reject_is_not_replanned_and_preserves_diagnostics(tmp_path, monkeypatch):
+    item = _failure_item(error_message="capacity unknown; no safe replan exists")
+    _, run_dir, results, commands = _run_voice_render_scenario(tmp_path, monkeypatch, [_render_failure([item])])
+
+    result = results[0]
+    assert result.status == "error"
+    assert result.failed_stage == "voicerender"
+    assert not any(command.argv[:2] == ["utterplan", "replan-book"] for command in commands)
+    for field in (
+        '"error_code": "preflight.reject"',
+        '"error_message": "capacity unknown; no safe replan exists"',
+        '"replan_required": false',
+        '"preflight_report": "chapter-0001/preflight.toml"',
+        '"chapter_id": "chapter-0001"',
+        '"render_plan_id": "render-plan-0001"',
+    ):
+        assert field in result.error
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["results"][0]["failed_stage"] == "voicerender"
+    report = (run_dir / "listen.html").read_text(encoding="utf-8")
+    assert "hard VoiceRender preflight reject" in report
+    assert "capacity unknown" in report
+
+
+def test_valid_voicerender_replan_retries_once_then_succeeds(tmp_path, monkeypatch):
+    item = _failure_item(
+        error_code="preflight.replan", error_message="capacity overflow", replan_required=True
+    )
+    _, _, results, commands = _run_voice_render_scenario(
+        tmp_path, monkeypatch, [_render_failure([item])], max_replans=1
+    )
+
+    assert results[0].status == "pass"
+    assert sum(command.argv[:2] == ["voicerender", "render-book"] for command in commands) == 2
+    assert sum(command.argv[:2] == ["utterplan", "replan-book"] for command in commands) == 1
+
+
+def test_mixed_voicerender_failure_set_is_not_replanned(tmp_path, monkeypatch):
+    replan = _failure_item(
+        chapter_id="chapter-replan",
+        error_code="preflight.replan",
+        error_message="capacity overflow",
+        replan_required=True,
+    )
+    reject = _failure_item(
+        chapter_id="chapter-reject",
+        error_code="preflight.reject",
+        error_message="capacity unknown",
+        replan_required=False,
+    )
+    _, _, results, commands = _run_voice_render_scenario(
+        tmp_path, monkeypatch, [_render_failure([replan, reject])]
+    )
+
+    assert results[0].failed_stage == "voicerender"
+    assert "chapter-replan" in results[0].error
+    assert "chapter-reject" in results[0].error
+    assert not any(command.argv[:2] == ["utterplan", "replan-book"] for command in commands)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "not json",
+        "[]",
+        json.dumps({"status": "failed"}),
+        json.dumps({"items": [{"status": "failed", "error_code": "preflight.replan", "replan_required": True}]}),
+    ],
+    ids=["missing-stdout", "invalid-json", "wrong-payload-type", "missing-items", "incomplete-failed-item"],
+)
+def test_malformed_voicerender_output_fails_closed(tmp_path, monkeypatch, stdout):
+    _, _, results, commands = _run_voice_render_scenario(tmp_path, monkeypatch, [(1, stdout, "")])
+
+    assert results[0].failed_stage == "voicerender"
+    assert "not safely replanable" in results[0].error
+    assert not any(command.argv[:2] == ["utterplan", "replan-book"] for command in commands)
+
+
+def test_replan_budget_exhaustion_preserves_last_voicerender_diagnostic(tmp_path, monkeypatch):
+    first = _failure_item(
+        chapter_id="chapter-first",
+        error_code="preflight.replan",
+        error_message="first capacity overflow",
+        replan_required=True,
+    )
+    last = _failure_item(
+        chapter_id="chapter-last",
+        render_plan_id="render-plan-last",
+        error_code="preflight.replan",
+        error_message="last capacity overflow",
+        replan_required=True,
+    )
+    _, _, results, commands = _run_voice_render_scenario(
+        tmp_path,
+        monkeypatch,
+        [_render_failure([first]), _render_failure([last])],
+        max_replans=1,
+    )
+
+    assert results[0].failed_stage == "voicerender"
+    assert "last capacity overflow" in results[0].error
+    assert "render-plan-last" in results[0].error
+    assert sum(command.argv[:2] == ["voicerender", "render-book"] for command in commands) == 2
+    assert sum(command.argv[:2] == ["utterplan", "replan-book"] for command in commands) == 1
+
+
+def test_replan_command_failure_is_attributed_to_replan(tmp_path, monkeypatch):
+    item = _failure_item(
+        error_code="preflight.replan", error_message="capacity overflow", replan_required=True
+    )
+    _, _, results, _ = _run_voice_render_scenario(
+        tmp_path, monkeypatch, [_render_failure([item])], replan_returncode=1
+    )
+
+    assert results[0].failed_stage == "replan"
+    assert "capacity overflow" in results[0].error
+    assert "replan rejected" in results[0].error
 def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch):
     profile_path = tmp_path / "profiles" / "My Voice!.renderprofile.toml"
     _write_profile(profile_path)
@@ -144,6 +331,16 @@ def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch
 
     import bookbench.runner as runner_module
 
+    monkeypatch.setattr(
+        harness,
+        "_probe_engine_inventory",
+        lambda: ([{"id": "piper", "package": "pipersynth", "installed": True, "installed_version": "0.2.5"}], None),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_installed_piper_package_versions",
+        lambda: {"voicerender": "0.1.1", "pipersynth": "0.2.5", "onnxvoice": "0.2.9", "piperg2p": "0.1.7"},
+    )
     monkeypatch.setattr(runner_module, "renderplan_text", renderplan_text)
 
     def fake_run(argv, *, check=True):
@@ -179,8 +376,22 @@ def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch
     assert profile_data["variant_label"] == profile.variant_label
     assert profile_data["variant"] == profile.variant
     assert profile_data["engines"] == ["piper"]
+    assert profile_data["targets"] == [{"engine_id": "piper", "target_id": "en_US-amy-medium"}]
     assert profile_data["staged_sha256"] == profile_data["original_sha256"]
     assert Path(profile_data["staged_path"]).read_bytes() == profile_path.read_bytes()
+    engine_data = json.loads((run_dir / "engines.json").read_text(encoding="utf-8"))
+    assert engine_data["schema"] == "bookbench.engine-provenance.v1"
+    assert engine_data["status"] == "captured"
+    assert engine_data["engines"][0]["id"] == "piper"
+    assert engine_data["package_versions"] == {
+        "voicerender": "0.1.1",
+        "pipersynth": "0.2.5",
+        "onnxvoice": "0.2.9",
+        "piperg2p": "0.1.7",
+    }
+    assert engine_data["selected_targets"] == [
+        {"candidate_label": "voice-a-candidate", "engine_id": "piper", "target_id": "en_US-amy-medium"}
+    ]
 
 
 def test_profile_failure_records_stage_separately(tmp_path, monkeypatch):
@@ -283,6 +494,16 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
         return subprocess.CompletedProcess(args, 0, "profile valid", "")
 
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        harness,
+        "_probe_engine_inventory",
+        lambda: ([{"id": "piper", "package": "pipersynth", "installed": True, "installed_version": "0.2.5"}], None),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_installed_piper_package_versions",
+        lambda: {"voicerender": "0.1.1", "pipersynth": "0.2.5", "onnxvoice": "0.2.9", "piperg2p": "0.1.7"},
+    )
     diagnostics = harness.doctor()
 
     assert diagnostics["profiles"][0]["validation"]["status"] == "passed"
@@ -294,5 +515,17 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
     assert diagnostics["source"]["exists"] is True
     assert diagnostics["work_root"]["writable"] is True
     assert diagnostics["ok"] is False
+    engine_provenance = diagnostics["engine_provenance"]
+    assert engine_provenance["status"] == "captured"
+    assert engine_provenance["package_versions"] == {
+        "voicerender": "0.1.1",
+        "pipersynth": "0.2.5",
+        "onnxvoice": "0.2.9",
+        "piperg2p": "0.1.7",
+    }
+    assert engine_provenance["selected_targets"] == [
+        {"candidate_label": "candidate-a", "engine_id": "piper", "target_id": "en_US-amy-medium"},
+        {"candidate_label": "candidate-b", "engine_id": "piper", "target_id": "en_US-amy-medium"},
+    ]
     assert len(validation_commands) == 2
     assert all(command[:3] == ["voicerender", "profile", "validate"] for command in validation_commands)

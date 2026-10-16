@@ -70,6 +70,7 @@ Each run is isolated under `.bookbench/runs/<run-id>/` and contains:
 - `run.json` with BookBench, Python, and platform versions, config and source paths and SHA256 values, selected chapters, dry-run state, and start/end timestamps
 - `profiles.json` with candidate and source profile identities, original and staged hashes and paths, canonical variant labels, full variants, and engines
 - `versions.json` with active CLI versions and visible version-probe failures
+- `engines.json` with the VoiceRender engine inventory, installed VoiceRender/PiperSynth/OnnxVoice/PiperG2P versions, and selected engine/target IDs
 - `commands.log` with each executed command's argv, separate stdout/stderr, exit status, and duration
 - `source.epub`, `book.ssmdbook/`, `prepared.txt`, and generated UtterPlan, RenderPlan, VoiceRender, AudioCompose, and AudioExport artifacts
 - exported `.m4b`, decoded validation `.wav`, browser listening copy, expected transcript, and SpeechScope JSON report per profile
@@ -85,11 +86,11 @@ the run fails before synthesis. VoiceRender currently documents `kokoro`, `piper
 
 ## Replanning
 
-VoiceRender may report a capacity failure that UtterPlan can replan. BookBench
-retries the book-level render up to `max_replans`. After a failed render it asks
-`utterplan replan-book` to consume the exact VoiceRender feedback. If no valid
-replan is available, the engine result fails rather than guessing a repair.
+VoiceRender JSON is authoritative: BookBench calls `utterplan replan-book` only when the response is valid, contains failed selected items, and every failed item explicitly has `status="failed"`, `replan_required=true`, and `error_code="preflight.replan"`.
 
+A hard reject, mixed failure set, malformed response, or incomplete failed-item record fails closed at `voicerender` without replanning. A valid capacity replan is retried only within the configured `max_replans` budget; exhausted retries preserve the last VoiceRender diagnostic.
+
+Summaries and listening reports retain the renderer's error code/message, replan flag, preflight report, chapter, and RenderPlan ID so hard rejects are not obscured by a secondary UtterPlan failure.
 ## Exact vs practical ASR gates
 
 The sample uses `max_wer = 0.0` and `max_cer = 0.0`, matching an exact smoke-test
@@ -126,6 +127,6 @@ scores or a ranking. No real synthesis runs in unit tests.
 
 - `bookbench run` validates every RenderProfile discovered in `profiles_dir` (or the explicit voice cases when present).
 - `bookbench compare` requires at least two `[[voices]]` entries and is the TOML-driven A/B/n listening workflow.
-- `bookbench doctor` returns structured diagnostics for tool paths and versions, RenderProfile validation, canonical variants and staging targets, duplicate identities, source availability, writable work root, and required-engine coverage without synthesis.
+- `bookbench doctor` returns structured diagnostics for tool paths and versions, RenderProfile validation, canonical variants and staging targets, duplicate identities, source availability, writable work root, and required-engine coverage and installed Piper dependency versions without synthesis.
 
 A comparison label is presentation only. The underlying UtterPlan/VoiceRender variant is always derived from the actual RenderProfile filename and canonical `profile_id`, so renaming a candidate in TOML cannot change pipeline identity.

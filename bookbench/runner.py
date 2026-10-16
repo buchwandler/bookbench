@@ -12,7 +12,9 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 from .config import Config
 from .profiles import ProfileCase, coverage, discover_profiles, inspect_profile
@@ -30,6 +32,22 @@ VERSION_PROBES = {
 }
 TOOLS = tuple(VERSION_PROBES)
 
+PIPER_DEPENDENCY_PACKAGES = ("voicerender", "pipersynth", "onnxvoice", "piperg2p")
+
+
+def _installed_piper_package_versions() -> dict[str, str | None]:
+    versions: dict[str, str | None] = {}
+    for package in PIPER_DEPENDENCY_PACKAGES:
+        try:
+            versions[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[package] = None
+    return versions
+
+
+def _version_probe_failed(version: str | None) -> bool:
+    return version is not None and version.startswith("probe_failed(")
+
 
 class PipelineError(RuntimeError):
     pass
@@ -46,6 +64,108 @@ class CommandResult:
     duration_s: float
     stdout: str
     stderr: str
+
+
+
+def _parse_voicerender_failure(result: CommandResult) -> tuple[dict[str, Any] | None, str | None]:
+    raw = result.stdout.strip()
+    if not raw:
+        return None, "missing JSON stdout"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"invalid JSON: {exc.msg}"
+    if not isinstance(payload, dict):
+        return None, "JSON payload must be an object"
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return payload, "JSON payload is missing a list of items"
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            return payload, f"items[{index}] must be an object"
+        status = item.get("status")
+        if not isinstance(status, str):
+            return payload, f"items[{index}] is missing a string status"
+        if status != "failed":
+            continue
+        required = ("id", "render_plan_id", "error_code", "error_message", "replan_required")
+        missing = [key for key in required if key not in item]
+        if missing:
+            return payload, f"failed items[{index}] is missing required fields: {', '.join(missing)}"
+        if not isinstance(item["id"], str) or not item["id"]:
+            return payload, f"failed items[{index}].id must be a non-empty string"
+        if not isinstance(item["render_plan_id"], str) or not item["render_plan_id"]:
+            return payload, f"failed items[{index}].render_plan_id must be a non-empty string"
+        if not isinstance(item["error_code"], str) or not item["error_code"]:
+            return payload, f"failed items[{index}].error_code must be a non-empty string"
+        if not isinstance(item["error_message"], str):
+            return payload, f"failed items[{index}].error_message must be a string"
+        if not isinstance(item["replan_required"], bool):
+            return payload, f"failed items[{index}].replan_required must be a boolean"
+        if "preflight_report" in item and item["preflight_report"] is not None and not isinstance(
+            item["preflight_report"], str
+        ):
+            return payload, f"failed items[{index}].preflight_report must be a string or null"
+    return payload, None
+
+
+def _voicerender_replanable(result: CommandResult) -> bool:
+    payload, invalid_reason = _parse_voicerender_failure(result)
+    if invalid_reason is not None or payload is None:
+        return False
+    failed = [item for item in payload["items"] if item["status"] == "failed"]
+    return bool(failed) and all(
+        item["replan_required"] is True and item["error_code"] == "preflight.replan" for item in failed
+    )
+
+
+def _voicerender_failure_message(result: CommandResult) -> str:
+    payload, invalid_reason = _parse_voicerender_failure(result)
+    parts = ["VoiceRender failed at voicerender."]
+    if invalid_reason is not None:
+        parts.append(f"response is not safely replanable: {invalid_reason}")
+    failed = []
+    if payload is not None and isinstance(payload.get("items"), list):
+        failed = [item for item in payload["items"] if isinstance(item, dict) and item.get("status") == "failed"]
+    for item in failed:
+        code = item.get("error_code")
+        replan_required = item.get("replan_required")
+        if code == "preflight.reject" and replan_required is False:
+            kind = "hard VoiceRender preflight reject"
+        elif code == "preflight.replan" and replan_required is True:
+            kind = "VoiceRender capacity replan required"
+        else:
+            kind = "VoiceRender pipeline/runtime failure"
+        diagnostic = {
+            "error_code": code,
+            "error_message": item.get("error_message"),
+            "replan_required": replan_required,
+            "preflight_report": item.get("preflight_report"),
+            "chapter_id": item.get("id", item.get("chapter_id")),
+            "render_plan_id": item.get("render_plan_id"),
+        }
+        parts.append(f"{kind}: {json.dumps(diagnostic, sort_keys=True)}")
+    if not failed and payload is not None:
+        diagnostic = {
+            "error_code": payload.get("error_code", payload.get("code")),
+            "error_message": payload.get("error_message", payload.get("error")),
+            "replan_required": payload.get("replan_required"),
+            "preflight_report": payload.get("preflight_report"),
+            "chapter_id": payload.get("id", payload.get("chapter_id")),
+            "render_plan_id": payload.get("render_plan_id"),
+        }
+        if any(value is not None for value in diagnostic.values()):
+            parts.append(f"VoiceRender response: {json.dumps(diagnostic, sort_keys=True)}")
+        elif payload.get("items") == []:
+            parts.append("VoiceRender response contained no failed selected items.")
+    if result.stderr.strip():
+        parts.append(f"stderr: {result.stderr.strip()}")
+    if payload is None and result.stdout.strip():
+        parts.append(f"stdout: {result.stdout.strip()}")
+    if len(parts) == 1:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        parts.append(detail)
+    return "\n".join(parts)
 
 
 @dataclass(slots=True)
@@ -159,6 +279,51 @@ class Harness:
                 out[tool] = "probe_failed(exit=0): no version output"
         return out
 
+    def _probe_engine_inventory(self) -> tuple[list[dict], str | None]:
+        argv = ["voicerender", "engines", "list", "--json"]
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(argv, text=True, capture_output=True, check=False)
+        except OSError as exc:
+            result = CommandResult(argv, 127, time.monotonic() - started, "", str(exc))
+            self._record_command(result)
+            return [], f"engine inventory probe failed: {exc}"
+        result = CommandResult(argv, proc.returncode, time.monotonic() - started, proc.stdout, proc.stderr)
+        self._record_command(result)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            return [], f"engine inventory probe failed: {detail}"
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            return [], f"engine inventory returned invalid JSON: {exc.msg}"
+        if not isinstance(payload, list) or any(
+            not isinstance(engine, dict) or not isinstance(engine.get("id"), str) for engine in payload
+        ):
+            return [], "engine inventory JSON must be a list of objects with string ids"
+        return payload, None
+
+    def _engine_provenance(self, profiles: list[ProfileCase]) -> dict:
+        if self.dry_run:
+            inventory, error, status = [], "Engine inventory probe skipped for dry-run.", "not_probed"
+        else:
+            inventory, error = self._probe_engine_inventory()
+            status = "captured" if error is None else "unavailable"
+        selected_targets = [
+            {"candidate_label": profile.label, "engine_id": engine, "target_id": target_id}
+            for profile in profiles
+            for engine, target_id in profile.targets
+        ]
+        return {
+            "schema": "bookbench.engine-provenance.v1",
+            "command": ["voicerender", "engines", "list", "--json"],
+            "status": status,
+            "error": error,
+            "engines": inventory,
+            "package_versions": _installed_piper_package_versions(),
+            "selected_targets": selected_targets,
+        }
+
     def _profiles(self) -> list[ProfileCase]:
         if self.config.voices:
             return [ProfileCase(v.name, inspect_profile(v.profile)) for v in self.config.voices]
@@ -172,8 +337,7 @@ class Harness:
                 "path": tool_paths[tool],
                 "available": tool_paths[tool] is not None,
                 "version": tool_versions[tool],
-                "version_probe_failed": isinstance(tool_versions[tool], str)
-                and tool_versions[tool].startswith("probe_failed("),
+                "version_probe_failed": _version_probe_failed(tool_versions[tool]),
             }
             for tool in TOOLS
         }
@@ -187,6 +351,7 @@ class Harness:
             ]
 
         profiles = []
+        valid_profiles: list[ProfileCase] = []
         variant_paths: dict[str, list[str]] = {}
         found_engines: set[str] = set()
         for label, path in candidates:
@@ -226,6 +391,7 @@ class Harness:
                         ),
                     }
                 )
+                valid_profiles.append(profile)
                 found_engines.update(profile.engines)
                 variant_paths.setdefault(profile.variant, []).append(str(path))
             if tool_paths["voicerender"] is None:
@@ -250,6 +416,7 @@ class Harness:
                 }
             profiles.append(diagnostic)
 
+        engine_provenance = self._engine_provenance(valid_profiles)
         duplicate_variants = [
             {"variant": variant, "profiles": paths}
             for variant, paths in sorted(variant_paths.items())
@@ -294,6 +461,7 @@ class Harness:
             "source": source,
             "work_root": work_root,
             "engine_coverage": engine_coverage,
+            "engine_provenance": engine_provenance,
         }
 
     def _chapter_args(self) -> list[str]:
@@ -362,8 +530,10 @@ class Harness:
             rendered = self._run(render_cmd, check=False)
             if rendered.returncode == 0:
                 return
+            if not _voicerender_replanable(rendered):
+                raise PipelineError(_voicerender_failure_message(rendered))
             if attempt >= self.config.max_replans:
-                raise PipelineError(rendered.stderr.strip() or rendered.stdout.strip() or "VoiceRender failed")
+                raise PipelineError(_voicerender_failure_message(rendered))
             self._replan_if_needed(run, context, rendered)
 
     def _replan_if_needed(self, run: RunContext, context: ProfileRunContext, rendered: CommandResult) -> None:
@@ -380,12 +550,11 @@ class Harness:
             check=False,
         )
         if replanned.returncode != 0:
-            detail = rendered.stderr.strip() or rendered.stdout.strip()
-            replan_detail = replanned.stderr.strip() or replanned.stdout.strip()
+            replan_detail = replanned.stderr.strip() or replanned.stdout.strip() or f"exit {replanned.returncode}"
             raise PipelineError(
-                f"VoiceRender failed and no valid replan was available.\nrender: {detail}\nreplan: {replan_detail}"
+                "VoiceRender requested a capacity replan, but UtterPlan replan-book failed.\n"
+                f"VoiceRender: {_voicerender_failure_message(rendered)}\nreplan: {replan_detail}"
             )
-
     def _compose(self, run: RunContext, context: ProfileRunContext) -> None:
         self._current_stage = "compose"
         self._run(
@@ -635,6 +804,10 @@ class Harness:
                     "variant": profile.variant,
                     "engines": list(profile.engines),
                     "staged_path": str(staged),
+                    "targets": [
+                        {"engine_id": engine, "target_id": target_id}
+                        for engine, target_id in profile.targets
+                    ],
                     "staged_sha256": None,
                 }
             )
@@ -653,6 +826,10 @@ class Harness:
         versions = {} if self.dry_run else self.versions()
         (self.run_dir / "versions.json").write_text(json.dumps(versions, indent=2) + "\n", encoding="utf-8")
 
+        engine_provenance = self._engine_provenance(profiles)
+        (self.run_dir / "engines.json").write_text(
+            json.dumps(engine_provenance, indent=2) + "\n", encoding="utf-8"
+        )
         self._current_stage = "text2epub"
         self._run(
             [
