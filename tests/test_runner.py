@@ -6,20 +6,25 @@ from pathlib import Path
 import pytest
 
 from bookbench.config import Config, SpeechScopeConfig, VoiceCandidate
-from bookbench.profiles import ProfileCase, inspect_profile
+from bookbench.profiles import ProfileCase, ProfileSelection, inspect_profile
 from bookbench.runner import CommandResult, Harness, PipelineError, ProfileRunContext
 
 PROFILE_ID = "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 
 
-def _write_profile(path: Path) -> bytes:
+def _write_profile(
+    path: Path,
+    *,
+    engine: str = "piper",
+    target_id: str = "en_US-amy-medium",
+) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = (
-        f'# Exact profile bytes\nprofile_id = "{PROFILE_ID}"\n\n[roles.narrator.binding]\nrenderer = "piper"\ntarget_id = "en_US-amy-medium"\n'
+        f'# Exact profile bytes\nprofile_id = "{PROFILE_ID}"\n\n'
+        f'[roles.narrator.binding]\nrenderer = "{engine}"\ntarget_id = "{target_id}"\n'
     ).encode()
     path.write_bytes(content)
     return content
-
 
 def _config(
     tmp_path: Path,
@@ -51,6 +56,31 @@ def _config(
         max_replans=max_replans,
         config_path=config_path,
         speechscope=speechscope if speechscope is not None else SpeechScopeConfig(),
+    )
+
+
+
+def _selection_config(
+    tmp_path: Path,
+    *,
+    entries: tuple[tuple[str, str], ...] = (("piper", "piper"), ("kitten", "kitten")),
+    required_engines: tuple[str, ...] = ("piper", "kitten"),
+) -> Config:
+    source = tmp_path / "source.md"
+    source.write_text("# Smoke fixture\n", encoding="utf-8")
+    profiles_dir = tmp_path / "profiles"
+    voices = []
+    for label, engine in entries:
+        profile_path = profiles_dir / f"{label}.renderprofile.toml"
+        _write_profile(profile_path, engine=engine, target_id=f"{engine}-target")
+        voices.append(VoiceCandidate(name=label, profile=profile_path))
+    return Config(
+        source=source,
+        profiles_dir=profiles_dir,
+        work_root=tmp_path / "runs",
+        cache_dir=tmp_path / "cache",
+        required_engines=required_engines,
+        voices=tuple(voices),
     )
 
 
@@ -783,3 +813,118 @@ def test_run_rejects_unsupported_compound_gate_before_synthesis(tmp_path, monkey
     run_data = json.loads((harness.run_dir / "run.json").read_text(encoding="utf-8"))
     assert run_data["failed_stage"] == "speechscope_capability"
     assert "max_compound_wer" in run_data["error"]
+
+
+
+def test_full_matrix_still_requires_every_configured_engine_before_preparation(tmp_path):
+    config = _selection_config(
+        tmp_path,
+        entries=(("piper", "piper"),),
+        required_engines=("piper", "kitten"),
+    )
+    harness = Harness(config, dry_run=True)
+
+    with pytest.raises(PipelineError, match="Missing required engine profiles"):
+        harness.run(run_id="incomplete-matrix")
+
+    assert harness.run_dir is None
+    assert harness.commands == []
+    assert not config.work_root.exists()
+
+
+def test_selected_run_ignores_unselected_required_engines_and_records_provenance(tmp_path):
+    harness = Harness(_selection_config(tmp_path), dry_run=True)
+    run_dir, results = harness.run(
+        run_id="selected-piper",
+        selection=ProfileSelection(engines=("piper",)),
+    )
+
+    assert [result.profile for result in results] == ["piper"]
+    run_data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    selection = run_data["selection"]
+    assert selection == {
+        "mode": "engine",
+        "requested": ["piper"],
+        "selected_profiles": ["piper"],
+        "selected_variants": ["piper--1234567890ab"],
+        "selected_engines": ["piper"],
+        "full_matrix": False,
+    }
+    profile_data = json.loads((run_dir / "profiles.json").read_text(encoding="utf-8"))
+    assert [profile["candidate_label"] for profile in profile_data] == ["piper"]
+    assert profile_data[0]["targets"] == [
+        {"engine_id": "piper", "target_id": "piper-target"}
+    ]
+    engine_data = json.loads((run_dir / "engines.json").read_text(encoding="utf-8"))
+    assert engine_data["selected_targets"] == [
+        {"candidate_label": "piper", "engine_id": "piper", "target_id": "piper-target"}
+    ]
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["selection"] == selection
+    report = (run_dir / "listen.html").read_text(encoding="utf-8")
+    assert "Selection: engine=piper" in report
+    assert "Profiles: piper; engines: piper" in report
+
+
+def test_selected_profile_runs_only_the_exact_candidate(tmp_path):
+    harness = Harness(_selection_config(tmp_path), dry_run=True)
+    run_dir, results = harness.run(
+        run_id="selected-kitten-profile",
+        selection=ProfileSelection(profiles=("kitten",)),
+    )
+
+    assert [result.profile for result in results] == ["kitten"]
+    profile_data = json.loads((run_dir / "profiles.json").read_text(encoding="utf-8"))
+    assert [profile["candidate_label"] for profile in profile_data] == ["kitten"]
+    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["selection"]["mode"] == "profile"
+
+
+def test_unknown_engine_selection_fails_before_run_directory_or_commands(tmp_path):
+    config = _selection_config(tmp_path)
+    harness = Harness(config, dry_run=True)
+
+    with pytest.raises(ValueError, match="Unknown or unconfigured engine selector"):
+        harness.run(run_id="unknown-engine", selection=ProfileSelection(engines=("kokoro",)))
+
+    assert harness.run_dir is None
+    assert harness.commands == []
+    assert not config.work_root.exists()
+
+
+def test_doctor_checks_selected_profiles_without_unrelated_required_engines(tmp_path, monkeypatch):
+    import subprocess
+
+    import bookbench.runner as runner_module
+
+    harness = Harness(_selection_config(tmp_path))
+    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: f"/tools/{tool}")
+    monkeypatch.setattr(harness, "versions", lambda: {tool: "version 1" for tool in runner_module.TOOLS})
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_capabilities",
+        lambda: {"supports_max_compound_wer": True},
+    )
+    monkeypatch.setattr(
+        harness,
+        "_probe_engine_inventory",
+        lambda: ([{"id": "piper"}], None),
+    )
+
+    def validate_profile(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, "profile valid", "")
+
+    monkeypatch.setattr(runner_module.subprocess, "run", validate_profile)
+    diagnostics = harness.doctor(selection=ProfileSelection(engines=("piper",)))
+
+    assert diagnostics["ok"] is True
+    assert diagnostics["selection"]["mode"] == "engine"
+    assert diagnostics["selection"]["selected_profiles"] == ["piper"]
+    assert diagnostics["engine_coverage"] == {
+        "found": ["piper"],
+        "required": ["piper"],
+        "missing": [],
+    }
+    assert [profile["label"] for profile in diagnostics["profiles"]] == ["piper"]
+    assert diagnostics["engine_provenance"]["selected_targets"] == [
+        {"candidate_label": "piper", "engine_id": "piper", "target_id": "piper-target"}
+    ]

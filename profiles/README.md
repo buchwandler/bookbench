@@ -1,22 +1,53 @@
 # Engine profiles
 
-BookBench treats RenderProfiles as executable test cases. Every file matching
-`*.renderprofile.toml` is run automatically.
+BookBench discovers top-level `*.renderprofile.toml` files. A RenderProfile is the
+single authoritative configuration for its renderer, target, voice, and engine
+options. Create and validate profiles with VoiceRender rather than maintaining a
+second BookBench engine configuration.
 
-Create profiles with VoiceRender rather than editing opaque engine bindings by hand:
+## Discover and create a profile
+
+Use VoiceRender discovery to choose a target that is actually available in the
+local environment. The human-readable list avoids assuming that every engine has
+JSON-compatible discovery metadata:
 
 ```bash
-voicerender voices list --engine piper --lang en-US --offline --json
+voicerender voices list --engine ENGINE --lang en-US --offline
 voicerender profile create \
-  --engine piper --target en_US-amy-medium --language en-US --offline \
-  --output profiles/piper.renderprofile.toml
+  --engine ENGINE \
+  --target TARGET_ID \
+  --language en-US \
+  --offline \
+  --output profiles/ENGINE.renderprofile.toml
+voicerender profile validate profiles/ENGINE.renderprofile.toml
 ```
 
-Repeat for the engines you want to gate. VoiceRender currently documents these
-engine extras: `kokoro`, `piper`, `pocket`, `kitten`, `sopro`, `supertonic`, and
-`inflect`. Reference-voice engines may need `--reference-wav`, `--voicefolio-ref`,
-or engine options; keep those choices in the RenderProfile, not in BookBench.
+Some targets need a discovered voice or engine option. For example, the validated
+profiles in this checkout use `Bella` for Kitten, `af_heart` for Kokoro, `alba`
+for Pocket, and speaker `F1` with `seed=0` for Supertonic. Keep those values in
+the RenderProfile. Reference-voice engines may also require a real pinned local
+or managed reference input.
 
-Set `required_engines` in `bookbench.toml` to make missing coverage fail before any
-expensive synthesis starts. Multiple profiles for the same engine are allowed and
-all of them are tested.
+## Profiles in this checkout
+
+The current matrix includes validated profiles for `inflect`, `kitten`, `kokoro`,
+`piper`, `pocket`, and `supertonic`. `sopro` is not gated because profile creation
+requires a pinned local or managed reference voice that is not available here.
+Do not add guessed targets or placeholder reference paths. Add the engine to
+`required_engines` only after its profile can be created and validated.
+
+To check or run one engine without requiring unrelated matrix engines:
+
+```bash
+bookbench doctor --engine kitten
+bookbench run --engine kitten
+```
+
+Repeat `--engine` to select a union of engines, or use `--profile LABEL` to select
+an exact BookBench case label. With no selector, `bookbench doctor` and
+`bookbench run` check and execute the complete configured matrix.
+
+The `bookbench.toml` in the repository is the shared configuration. Multiple
+profiles for one engine are supported and all matching cases run when selected by
+engine. Use `bookbench compare` with explicit `[[voices]]` entries for A/B/n voice
+comparisons.

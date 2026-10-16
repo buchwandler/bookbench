@@ -1,7 +1,7 @@
-# Five candidates. Each profile is generated/validated by VoiceRender.
+# Three candidates using RenderProfiles included in this repository.
 source = "fixtures/smoke.md"
 language = "en-US"
-title = "BookBench Five Voice Comparison"
+title = "BookBench Three Engine Comparison"
 work_root = ".bookbench/runs"
 cache_dir = ".bookbench/cache/voicerender"
 chapters = "all"
@@ -13,29 +13,17 @@ backend = "redux"
 device = "cpu"
 normalization = "basic-v1"
 reference_mode = "renderplan"
-# Practical tolerance for bounded compound-boundary variants; strict boundaries are opt-in.
 max_compound_wer = 0.10
-# Optional additional strict token-boundary limit:
-# max_wer = 0.10
 max_cer = 0.05
 
 [[voices]]
 name = "piper-amy"
 profile = "profiles/piper.renderprofile.toml"
 
-# Create these four RenderProfiles first with `voicerender profile create`.
 [[voices]]
-name = "kokoro-a"
-profile = "profiles/kokoro-a.renderprofile.toml"
+name = "kitten-bella"
+profile = "profiles/kitten.renderprofile.toml"
 
 [[voices]]
-name = "kokoro-b"
-profile = "profiles/kokoro-b.renderprofile.toml"
-
-[[voices]]
-name = "kitten-a"
-profile = "profiles/kitten-a.renderprofile.toml"
-
-[[voices]]
-name = "supertonic-a"
-profile = "profiles/supertonic-a.renderprofile.toml"
+name = "kokoro-heart"
+profile = "profiles/kokoro.renderprofile.toml"

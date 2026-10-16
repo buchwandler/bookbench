@@ -1,0 +1,40 @@
+default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:59cfb22f4ef069938a89e25035b1ad9b9b56431d567081cb685488e4455d6963"
+schema_version = 1
+
+[pauses]
+clause = "180ms"
+mode = "manual"
+paragraph = "800ms"
+sentence = "500ms"
+
+[planning]
+capacity_fallback = ["clause", "token"]
+split = "sentence"
+
+[roles]
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "supertonic"
+target_id = "supertonic-3"
+voice = "F1"
+
+[roles.narrator.binding.options]
+seed = 0
+speed = 1.05
+steps = 5
+voice_level = "off"
+
+[roles.narrator.binding.renderer_metadata]
+frontend = "supertonicsynth"
+pronunciation = "unsupported"
+source_revision = "aafc6e32416a594460b32413efc49d7fe4ce6d46"
+
+[roles.narrator.requirements]
+frontend = "supertonicsynth"
+pronunciation = "unsupported"
+token_fields = []

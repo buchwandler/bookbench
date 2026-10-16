@@ -1,0 +1,48 @@
+default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:3b5f647f8f573f69d081220b5fbe97c33089a99c625cb8fc5a4970f3cfcfe1bf"
+schema_version = 1
+
+[pauses]
+clause = "180ms"
+mode = "manual"
+paragraph = "800ms"
+sentence = "500ms"
+
+[planning]
+capacity_fallback = ["clause", "token"]
+split = "sentence"
+
+[roles]
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "kokoro"
+target_id = "v1.0"
+voice = "af_heart"
+
+[roles.narrator.binding.options]
+
+[roles.narrator.binding.renderer_metadata]
+frontend = "pykokoro"
+max_tokens = 510
+pronunciation = "pykokoro.ipa"
+
+[roles.narrator.binding.renderer_metadata.capacity]
+guarantee = "hard"
+maximum = 510
+metric = "model_tokens"
+
+[roles.narrator.capacity]
+
+[roles.narrator.capacity.renderer]
+guarantee = "hard"
+maximum = 510
+metric = "model_tokens"
+
+[roles.narrator.requirements]
+frontend = "pykokoro"
+pronunciation = "pykokoro.ipa"
+token_fields = ["span", "pos", "tag"]

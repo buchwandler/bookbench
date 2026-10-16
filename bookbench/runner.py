@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, SpeechScopeConfig
-from .profiles import ProfileCase, coverage, discover_profiles, inspect_profile
+from .profiles import (
+    ProfileCase,
+    ProfileSelection,
+    coverage,
+    inspect_profile,
+    select_profiles,
+)
 from .rendertext import renderplan_text
 
 VERSION_PROBES = {
@@ -414,12 +420,76 @@ class Harness:
             "selected_targets": selected_targets,
         }
 
-    def _profiles(self) -> list[ProfileCase]:
+    def _candidate_profiles(self) -> list[tuple[str, Path]]:
         if self.config.voices:
-            return [ProfileCase(v.name, inspect_profile(v.profile)) for v in self.config.voices]
-        return [ProfileCase(p.label, p) for p in discover_profiles(self.config.profiles_dir)]
+            return [(voice.name, voice.profile) for voice in self.config.voices]
+        suffix = ".renderprofile.toml"
+        return [
+            (path.name[: -len(suffix)], path)
+            for path in sorted(self.config.profiles_dir.glob(f"*{suffix}"))
+        ]
 
-    def doctor(self) -> dict:
+    def _selected_candidate_profiles(
+        self, selection: ProfileSelection | None
+    ) -> list[tuple[str, Path]]:
+        candidates = self._candidate_profiles()
+        if selection is None or not selection.active:
+            return candidates
+
+        if selection.profiles:
+            requested = set(selection.profiles)
+            configured = {label for label, _path in candidates}
+            missing = requested - configured
+            if missing:
+                raise ValueError("Unknown profile selector(s): " + ", ".join(sorted(missing)))
+            return [(label, path) for label, path in candidates if label in requested]
+
+        valid_cases = []
+        for label, path in candidates:
+            try:
+                profile = inspect_profile(path)
+            except (OSError, ValueError):
+                continue
+            valid_cases.append(ProfileCase(label, profile))
+        selected = select_profiles(valid_cases, selection)
+        selected_keys = {(case.label, case.path.resolve()) for case in selected}
+        return [
+            (label, path)
+            for label, path in candidates
+            if (label, path.resolve()) in selected_keys
+        ]
+
+    def _profiles(
+        self, selection: ProfileSelection | None = None
+    ) -> list[ProfileCase]:
+        return [
+            ProfileCase(label, inspect_profile(path))
+            for label, path in self._selected_candidate_profiles(selection)
+        ]
+
+    def _selection_provenance(
+        self,
+        selection: ProfileSelection | None,
+        profiles: list[ProfileCase],
+        *,
+        profile_labels: list[str] | None = None,
+    ) -> dict:
+        selected = selection or ProfileSelection()
+        mode = "all" if not selected.active else "engine" if selected.engines else "profile"
+        requested = list(selected.engines or selected.profiles)
+        return {
+            "mode": mode,
+            "requested": requested,
+            "selected_profiles": profile_labels or [profile.label for profile in profiles],
+            "selected_variants": [profile.variant for profile in profiles],
+            "selected_engines": sorted(
+                {engine for profile in profiles for engine in profile.engines}
+            ),
+            "full_matrix": not selected.active,
+        }
+
+    def doctor(self, *, selection: ProfileSelection | None = None) -> dict:
+        candidates = self._selected_candidate_profiles(selection)
         tool_paths = {tool: shutil.which(tool) for tool in TOOLS}
         tool_versions = self.versions()
         speechscope_capabilities = self._probe_speechscope_capabilities()
@@ -433,13 +503,6 @@ class Harness:
             for tool in TOOLS
         }
 
-        if self.config.voices:
-            candidates = [(voice.name, voice.profile) for voice in self.config.voices]
-        else:
-            suffix = ".renderprofile.toml"
-            candidates = [
-                (path.name[: -len(suffix)], path) for path in sorted(self.config.profiles_dir.glob(f"*{suffix}"))
-            ]
 
         profiles = []
         valid_profiles: list[ProfileCase] = []
@@ -508,6 +571,11 @@ class Harness:
             profiles.append(diagnostic)
 
         engine_provenance = self._engine_provenance(valid_profiles)
+        selection_provenance = self._selection_provenance(
+            selection,
+            valid_profiles,
+            profile_labels=[label for label, _path in candidates],
+        )
         duplicate_variants = [
             {"variant": variant, "profiles": paths}
             for variant, paths in sorted(variant_paths.items())
@@ -524,10 +592,14 @@ class Harness:
         else:
             work_root["writable"] = True
 
-        missing_engines = set(self.config.required_engines) - found_engines
+        selected = selection or ProfileSelection()
+        required_engines = (
+            self.config.required_engines if not selected.active else selected.engines
+        )
+        missing_engines = set(required_engines) - found_engines
         engine_coverage = {
             "found": sorted(found_engines),
-            "required": sorted(self.config.required_engines),
+            "required": sorted(required_engines),
             "missing": sorted(missing_engines),
         }
         profile_checks_pass = bool(profiles) and all(
@@ -559,6 +631,7 @@ class Harness:
             "work_root": work_root,
             "engine_coverage": engine_coverage,
             "engine_provenance": engine_provenance,
+            "selection": selection_provenance,
         }
 
     def _chapter_args(self) -> list[str]:
@@ -827,7 +900,12 @@ class Harness:
             json.dumps(self._profile_metadata, indent=2) + "\n", encoding="utf-8"
         )
 
-    def run(self, *, run_id: str | None = None) -> tuple[Path, list[ProfileResult]]:
+    def run(
+        self,
+        *,
+        run_id: str | None = None,
+        selection: ProfileSelection | None = None,
+    ) -> tuple[Path, list[ProfileResult]]:
         self.run_dir = None
         self.commands = []
         self._current_stage = None
@@ -836,7 +914,7 @@ class Harness:
         self._profile_metadata = []
         self._run_started_at = datetime.now(UTC)
         try:
-            return self._run_pipeline(run_id=run_id)
+            return self._run_pipeline(run_id=run_id, selection=selection)
         except Exception as exc:
             self._run_error = str(exc)
             raise
@@ -847,15 +925,23 @@ class Harness:
                 self._run_metadata["error"] = self._run_error
                 self._write_provenance()
 
-    def _run_pipeline(self, *, run_id: str | None = None) -> tuple[Path, list[ProfileResult]]:
-        profiles = self._profiles()
+    def _run_pipeline(
+        self,
+        *,
+        run_id: str | None = None,
+        selection: ProfileSelection | None = None,
+    ) -> tuple[Path, list[ProfileResult]]:
+        profiles = self._profiles(selection)
         if not profiles:
             raise PipelineError(f"No *.renderprofile.toml files found in {self.config.profiles_dir}")
-        found, missing = coverage(profiles, self.config.required_engines)
-        if missing:
-            raise PipelineError(
-                f"Missing required engine profiles: {', '.join(sorted(missing))}; found: {', '.join(sorted(found))}"
-            )
+        selected = selection or ProfileSelection()
+        selection_provenance = self._selection_provenance(selected, profiles)
+        if not selected.active:
+            found, missing = coverage(profiles, self.config.required_engines)
+            if missing:
+                raise PipelineError(
+                    f"Missing required engine profiles: {', '.join(sorted(missing))}; found: {', '.join(sorted(found))}"
+                )
         if not self.config.source.is_file():
             raise PipelineError(f"Source not found: {self.config.source}")
 
@@ -876,6 +962,7 @@ class Harness:
             "source_path": str(self.config.source),
             "source_sha256": _file_sha256(self.config.source),
             "selected_chapters": self.config.chapters,
+            "selection": selection_provenance,
             "dry_run": self.dry_run,
             "start_timestamp": self._run_started_at.isoformat(),
             "end_timestamp": None,
@@ -1011,6 +1098,7 @@ class Harness:
             "run_id": run_id,
             "source": str(self.config.source),
             "book": str(book),
+            "selection": selection_provenance,
             "speechscope_gate": _configured_speechscope_thresholds(self.config.speechscope),
             "results": [asdict(x) for x in results],
             "passed": sum(x.status == "pass" for x in results),
@@ -1019,5 +1107,5 @@ class Harness:
         (self.run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         from .report import build_listening_report
 
-        build_listening_report(self.run_dir, results)
+        build_listening_report(self.run_dir, results, selection_provenance)
         return self.run_dir, results

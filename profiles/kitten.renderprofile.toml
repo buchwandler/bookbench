@@ -1,0 +1,37 @@
+default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:ef93cbfe13850fd3ceb7216f020f7412f4e5791e33dea563274a778954b3b73c"
+schema_version = 1
+
+[pauses]
+clause = "180ms"
+mode = "manual"
+paragraph = "800ms"
+sentence = "500ms"
+
+[planning]
+capacity_fallback = ["clause", "token"]
+split = "sentence"
+
+[roles]
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "kitten"
+target_id = "nano-0.8-int8"
+voice = "Bella"
+
+[roles.narrator.binding.options]
+speed = 1.0
+
+[roles.narrator.binding.renderer_metadata]
+frontend = "kittensynth"
+pronunciation = "unsupported"
+source_revision = "b5c9e5ce0faf0b025c0aa5afa02637c087f813ee"
+
+[roles.narrator.requirements]
+frontend = "kittensynth"
+pronunciation = "unsupported"
+token_fields = []

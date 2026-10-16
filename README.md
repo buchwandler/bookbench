@@ -50,39 +50,53 @@ pytest -q
 bookbench run
 ```
 
-The starter includes the current public Piper example profile. Replace/regenerate
-it with `voicerender profile create` if its renderer snapshot becomes stale.
+The starter includes validated VoiceRender RenderProfiles for six engines. Refresh
+or replace any profile with `voicerender profile create` when its renderer snapshot
+or chosen voice needs updating.
 
-For all engines, add one `*.renderprofile.toml` per engine under `profiles/`, then
-copy `bookbench-all-engines.toml.example` to your preferred config and run:
+The repository uses one shared `bookbench.toml` plus VoiceRender-owned
+`*.renderprofile.toml` files under `profiles/`. See `profiles/README.md` for target
+discovery, profile creation, and validation. Add an engine to `required_engines`
+only after its real target profile has been created and validated.
+
+Run a selected engine during onboarding, select several engines, or run a named
+BookBench case:
 
 ```bash
-bookbench -c bookbench-all-engines.toml run
+bookbench doctor --engine piper
+bookbench run --engine piper
+bookbench run --engine piper --engine kitten
+bookbench run --profile piper
 ```
 
-Every profile is tested, so you can also keep several voices/models for the same
-engine.
+With no selector, `bookbench doctor` and `bookbench run` check or execute the full
+configured matrix. Common source preparation runs once, followed by the selected
+profile branches. `--engine` and `--profile` are repeatable and mutually exclusive;
+a misspelled or unmatched selector is an error, never a fallback to all profiles.
+`bookbench compare` remains the explicit A/B/n voice-comparison workflow.
 
 ## Evidence
 
 Each run is isolated under `.bookbench/runs/<run-id>/` and contains:
 
-- `run.json` with BookBench, Python, and platform versions, config and source paths and SHA256 values, selected chapters, dry-run state, and start/end timestamps
-- `profiles.json` with candidate and source profile identities, original and staged hashes and paths, canonical variant labels, full variants, and engines
+- `run.json` with versions, config/source hashes, selected chapters, selection mode and requested selectors, selected profiles/engines/variants, dry-run state, and timestamps
+- `profiles.json` with only the selected candidate identities, profile hashes/paths, variants, engines, targets, and staged-profile evidence
 - `versions.json` with active CLI versions and visible version-probe failures
-- `engines.json` with the VoiceRender engine inventory, installed VoiceRender/PiperSynth/OnnxVoice/PiperG2P versions, and selected engine/target IDs
+- `engines.json` with the VoiceRender engine inventory and selected engine/target IDs for this run
 - `commands.log` with each executed command's argv, separate stdout/stderr, exit status, and duration
 - `source.epub`, `book.ssmdbook/`, `prepared.txt`, and generated UtterPlan, RenderPlan, VoiceRender, AudioCompose, and AudioExport artifacts
 - exported `.m4b`, decoded validation `.wav`, browser listening copy, expected transcript, and SpeechScope JSON report per profile
 - `summary.json` with candidate results and failure stages
-- `listen.html` with full variants, compound/strict WER, CER, boundary variants, artifact links, and per-candidate failure details
+- `listen.html` with selection scope, selected profiles/engines, full variants, metrics, artifacts, and per-profile failure details
 
 ## Engine matrix
 
-BookBench discovers engines from `roles.*.binding.renderer` in RenderProfiles. The
-`required_engines` config is a coverage gate: if a required engine has no profile,
-the run fails before synthesis. VoiceRender currently documents `kokoro`, `piper`,
-`pocket`, `kitten`, `sopro`, `supertonic`, and `inflect` extras.
+BookBench discovers renderer identities from `roles.*.binding.renderer` in each
+RenderProfile. `required_engines` is enforced only for the unselected full matrix;
+explicit `--engine` and `--profile` runs check their selected cases without requiring
+unrelated engines. The repository currently gates the validated profiles for
+`inflect`, `kitten`, `kokoro`, `piper`, `pocket`, and `supertonic`. Add `sopro` only
+after a pinned local or managed reference voice is available and its profile validates.
 
 ## Replanning
 
@@ -114,9 +128,9 @@ engine matrix and retain `.bookbench/runs/` as the evidence artifact.
 ## Voice comparison / A-B tests
 
 `bookbench compare` runs an explicit `[[voices]]` matrix and generates `listen.html` with per-voice playback controls.
-Copy `bookbench-voice-compare.toml.example` to `bookbench-voice-compare.toml` and
-create the referenced RenderProfiles (the example only ships a working _profile file_
-for Piper, not the other four model/profile assets). Then run:
+Copy `bookbench-voice-compare.toml.example` to `bookbench-voice-compare.toml`.
+It references the included Piper, Kitten, and Kokoro RenderProfiles; change labels or
+profile paths to compare other validated assets. Then run:
 
 ```bash
 bookbench -c bookbench-voice-compare.toml compare
@@ -130,8 +144,8 @@ order. Compound/strict WER and CER are acoustic transcript-validation measures, 
 scores or a ranking. No real synthesis runs in unit tests.
 ## Command split
 
-- `bookbench run` validates every RenderProfile discovered in `profiles_dir` (or the explicit voice cases when present).
-- `bookbench compare` requires at least two `[[voices]]` entries and is the TOML-driven A/B/n listening workflow.
-- `bookbench doctor` returns structured diagnostics for tool paths and versions, RenderProfile validation, canonical variants and staging targets, duplicate identities, source availability, writable work root, and required-engine coverage and installed Piper dependency versions, and SpeechScope compound-gate capability without synthesis.
+- `bookbench run` executes every configured case with one shared source-preparation pipeline, or only the selected `--engine`/`--profile` cases.
+- `bookbench doctor` validates the full configured matrix or only selected profiles and reports selection-aware engine coverage.
+- `bookbench compare` requires at least two `[[voices]]` entries and remains the TOML-driven A/B/n listening workflow.
 
 A comparison label is presentation only. The underlying UtterPlan/VoiceRender variant is always derived from the actual RenderProfile filename and canonical `profile_id`, so renaming a candidate in TOML cannot change pipeline identity.

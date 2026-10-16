@@ -1,13 +1,13 @@
 source = "fixtures/smoke.md"
 language = "en-US"
-title = "BookBench All Engines"
+title = "BookBench Configured Engine Matrix"
 profiles_dir = "profiles"
 work_root = ".bookbench/runs"
 cache_dir = ".bookbench/cache/voicerender"
 chapters = "all"
 max_replans = 3
 fail_fast = false
-required_engines = ["kokoro", "piper", "pocket", "kitten", "sopro", "supertonic", "inflect"]
+required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "supertonic"]
 
 [speechscope]
 backend = "redux"

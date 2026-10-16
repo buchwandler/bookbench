@@ -1,0 +1,50 @@
+default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:6f0c3e0b491e59d04881711309d8729e050907cf0b54b4e72ca7a33ad1f640b8"
+schema_version = 1
+
+[pauses]
+clause = "180ms"
+mode = "manual"
+paragraph = "800ms"
+sentence = "500ms"
+
+[planning]
+capacity_fallback = ["clause", "token"]
+split = "sentence"
+
+[roles]
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "pocket"
+target_id = "english_2026-04"
+voice = "alba"
+
+[roles.narrator.binding.options]
+precision = "int8"
+
+[roles.narrator.binding.renderer_metadata]
+frontend = "pocketsynth"
+max_token_per_chunk = 50
+pronunciation = "unsupported"
+source_revision = "58a6d00cf13d239b6748cb0769f35c580a8f606c"
+
+[roles.narrator.binding.renderer_metadata.capacity]
+guarantee = "hard"
+maximum = 50
+metric = "model_tokens"
+
+[roles.narrator.capacity]
+
+[roles.narrator.capacity.renderer]
+guarantee = "hard"
+maximum = 50
+metric = "model_tokens"
+
+[roles.narrator.requirements]
+frontend = "pocketsynth"
+pronunciation = "unsupported"
+token_fields = []

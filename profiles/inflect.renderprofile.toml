@@ -1,0 +1,54 @@
+default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:8d055f460397559ea00666b3b533def4606a2d3d6cc1edeb29484656c5317b35"
+schema_version = 1
+
+[pauses]
+clause = "180ms"
+mode = "manual"
+paragraph = "800ms"
+sentence = "500ms"
+
+[planning]
+capacity_fallback = ["clause", "token"]
+split = "sentence"
+
+[roles]
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "inflect"
+target_id = "nano-v2"
+voice = "default"
+
+[roles.narrator.binding.options]
+seed = 0
+speed = 1.0
+variation = 0.667
+voice_level = "off"
+
+[roles.narrator.binding.renderer_metadata]
+capacity_policy_revision = "345e2622158a48a70e541e8917ba6b7437b7e921585c64e390fecfeb9c53274c"
+frontend = "inflectsynth"
+max_input_tokens = 400
+pronunciation = "unsupported"
+source_revision = "67fc9249e0bb8ab4b196d25cb09b6dd43f5e4f13"
+
+[roles.narrator.binding.renderer_metadata.capacity]
+guarantee = "hard"
+maximum = 400
+metric = "model_tokens"
+
+[roles.narrator.capacity]
+
+[roles.narrator.capacity.renderer]
+guarantee = "hard"
+maximum = 400
+metric = "model_tokens"
+
+[roles.narrator.requirements]
+frontend = "inflectsynth"
+pronunciation = "unsupported"
+token_fields = []

@@ -6,17 +6,38 @@ import sys
 from pathlib import Path
 
 from .config import load_config
+from .profiles import ProfileSelection
 from .runner import Harness, PipelineError
+
+
+def _add_profile_selectors(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--engine",
+        action="append",
+        default=[],
+        metavar="ENGINE",
+        help="Select configured RenderProfiles using ENGINE; repeatable",
+    )
+    group.add_argument(
+        "--profile",
+        action="append",
+        default=[],
+        metavar="PROFILE",
+        help="Select the named BookBench profile/candidate; repeatable",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bookbench", description="Validate and compare the Buchwandler audiobook pipeline")
     p.add_argument("--config", "-c", default="bookbench.toml", help="TOML configuration file")
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("doctor", help="Check tools, profiles, and engine coverage")
+    doctor = sub.add_parser("doctor", help="Check tools, profiles, and engine coverage")
+    _add_profile_selectors(doctor)
     run = sub.add_parser("run", help="Validate the configured RenderProfile matrix")
     run.add_argument("--run-id")
     run.add_argument("--dry-run", action="store_true")
+    _add_profile_selectors(run)
     compare = sub.add_parser(
         "compare",
         help="Run explicit [[voices]] candidates and generate a listening report",
@@ -33,11 +54,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "compare" and len(config.voices) < 2:
             raise ValueError("compare requires at least two [[voices]] entries in the TOML config")
         harness = Harness(config, dry_run=getattr(args, "dry_run", False))
+        selection = ProfileSelection(
+            engines=tuple(dict.fromkeys(getattr(args, "engine", []))),
+            profiles=tuple(dict.fromkeys(getattr(args, "profile", []))),
+        )
         if args.command == "doctor":
-            data = harness.doctor()
+            data = harness.doctor(selection=selection)
             print(json.dumps(data, indent=2))
             return 0 if data["ok"] else 1
-        run_dir, results = harness.run(run_id=args.run_id)
+        if args.command == "compare":
+            run_dir, results = harness.run(run_id=args.run_id)
+        else:
+            run_dir, results = harness.run(run_id=args.run_id, selection=selection)
         print(f"Run: {run_dir}")
         print(f"Listening report: {run_dir / 'listen.html'}")
         print(f"{'PROFILE':24} {'ENGINE':18} {'STATUS':8} {'WER':>8} {'CER':>8}")

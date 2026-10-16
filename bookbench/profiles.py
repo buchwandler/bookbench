@@ -103,6 +103,51 @@ class ProfileCase:
         return self.profile.targets
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileSelection:
+    engines: tuple[str, ...] = ()
+    profiles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.engines and self.profiles:
+            raise ValueError("engine and profile selectors cannot be combined")
+
+    @property
+    def active(self) -> bool:
+        return bool(self.engines or self.profiles)
+
+
+def select_profiles(
+    profiles: Iterable[ProfileCase],
+    selection: ProfileSelection,
+) -> list[ProfileCase]:
+    cases = list(profiles)
+    if not selection.active:
+        return cases
+
+    if selection.engines:
+        requested = set(selection.engines)
+        configured = {engine for case in cases for engine in case.engines}
+        missing = requested - configured
+        if missing:
+            raise ValueError(
+                "Unknown or unconfigured engine selector(s): "
+                + ", ".join(sorted(missing))
+                + ". Configured engines: "
+                + ", ".join(sorted(configured))
+            )
+        return [case for case in cases if requested.intersection(case.engines)]
+
+    requested_profiles = set(selection.profiles)
+    configured_profiles = {case.label for case in cases}
+    missing_profiles = requested_profiles - configured_profiles
+    if missing_profiles:
+        raise ValueError(
+            "Unknown profile selector(s): " + ", ".join(sorted(missing_profiles))
+        )
+    return [case for case in cases if case.label in requested_profiles]
+
+
 def discover_profiles(directory: str | Path) -> list[ProfileInfo]:
     directory = Path(directory)
     return [inspect_profile(path) for path in sorted(directory.glob("*.renderprofile.toml"))]

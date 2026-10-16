@@ -23,7 +23,11 @@ def _artifact_link(run_dir: Path, path: str | Path | None, label: str) -> str:
     return f'<a href="{escape(relative, quote=True)}">{escape(label)}</a>'
 
 
-def build_listening_report(run_dir: Path, results: list) -> Path:
+def build_listening_report(
+    run_dir: Path,
+    results: list,
+    selection: dict | None = None,
+) -> Path:
     run_dir = Path(run_dir)
     rows: list[str] = []
     for result in results:
@@ -64,6 +68,19 @@ def build_listening_report(run_dir: Path, results: list) -> Path:
             f"<td>{compound_wer}</td><td>{wer}</td><td>{cer}</td><td>{boundary_variants}</td><td>{failed_stage}</td>"
             f"<td>{audio}</td><td>{artifact_links}<small>{error}</small></td></tr>"
         )
+    selection_html = ""
+    if selection is not None:
+        mode = selection["mode"]
+        requested = selection["requested"]
+        selection_label = (
+            "all configured profiles" if mode == "all" else f"{mode}={', '.join(requested)}"
+        )
+        profile_labels = ", ".join(selection["selected_profiles"]) or "none"
+        engine_labels = ", ".join(selection["selected_engines"]) or "none"
+        selection_html = (
+            f"<p>Selection: {escape(selection_label)}. "
+            f"Profiles: {escape(profile_labels)}; engines: {escape(engine_labels)}.</p>"
+        )
     html = (
         """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>BookBench Voice Comparison</title><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -71,7 +88,9 @@ def build_listening_report(run_dir: Path, results: list) -> Path:
 table{border-collapse:collapse;width:100%}td,th{padding:1rem;border-bottom:1px solid #ccc;text-align:left}
 th{white-space:nowrap}audio{width:100%;min-width:220px}small{display:block;color:#995;margin-top:.4rem}
 @media(max-width:750px){table{display:block;overflow-x:auto}}</style></head><body>
-<h1>BookBench voice comparison</h1><p>Listen to each candidate in configured profile order.
+<h1>BookBench voice comparison</h1>"""
+        + selection_html
+        + """<p>Listen to each candidate in configured profile order.
 Compound WER is the default spoken-content gate and tolerates SpeechScope's bounded adjacent
 compound-word split/join variants. Strict WER remains a diagnostic for exact whitespace-tokenized
 word boundaries. CER is retained as an independent character-content check. These are validation

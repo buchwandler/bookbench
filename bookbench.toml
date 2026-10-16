@@ -8,9 +8,9 @@ chapters = "all"
 max_replans = 3
 fail_fast = false
 
-# The starter ships one current Piper example. Add one RenderProfile per engine
-# and extend this list to make missing engine coverage a hard failure.
-required_engines = ["piper"]
+# Gate only engines with committed, validated RenderProfiles.
+# Add another engine here after its profile has been created and validated.
+required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "supertonic"]
 
 [speechscope]
 backend = "redux"
