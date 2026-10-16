@@ -12,6 +12,9 @@ fail_fast = false
 # Add another engine here after its profile has been created and validated.
 required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "supertonic"]
 
+[utterplan]
+spacy = "auto"
+
 [speechscope]
 backend = "redux"
 device = "cpu"

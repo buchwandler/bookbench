@@ -15,6 +15,7 @@ class ProfileInfo:
     engines: tuple[str, ...]
     targets: tuple[tuple[str, str], ...] = ()
 
+    required_token_fields: tuple[str, ...] = ()
     @property
     def variant_label(self) -> str:
         raw = self.label.lower()
@@ -40,15 +41,28 @@ def inspect_profile(path: str | Path) -> ProfileInfo:
         raise ValueError(f"{path}: missing/invalid profile_id")
     engines: set[str] = set()
     targets: set[tuple[str, str]] = set()
-    for role in (data.get("roles") or {}).values():
-        if isinstance(role, dict):
-            binding = role.get("binding") or {}
-            renderer = binding.get("renderer") if isinstance(binding, dict) else None
-            if renderer:
-                engines.add(str(renderer))
-                target_id = binding.get("target_id")
-                if isinstance(target_id, str) and target_id:
-                    targets.add((str(renderer), target_id))
+    required_token_fields: set[str] = set()
+    for role_name, role in (data.get("roles") or {}).items():
+        if not isinstance(role, dict):
+            continue
+        binding = role.get("binding") or {}
+        renderer = binding.get("renderer") if isinstance(binding, dict) else None
+        if renderer:
+            engines.add(str(renderer))
+            target_id = binding.get("target_id")
+            if isinstance(target_id, str) and target_id:
+                targets.add((str(renderer), target_id))
+        requirements = role.get("requirements", {})
+        if not isinstance(requirements, dict):
+            raise TypeError(f"{path}: roles.{role_name}.requirements must be a table")
+        token_fields = requirements.get("token_fields", [])
+        if not isinstance(token_fields, (list, tuple)) or any(
+            not isinstance(field, str) or not field.strip() for field in token_fields
+        ):
+            raise ValueError(
+                f"{path}: roles.{role_name}.requirements.token_fields must be a list of non-empty strings"
+            )
+        required_token_fields.update(token_fields)
     if not engines:
         raise ValueError(f"{path}: no roles.*.binding.renderer found")
     return ProfileInfo(
@@ -57,6 +71,7 @@ def inspect_profile(path: str | Path) -> ProfileInfo:
         profile_id=profile_id,
         engines=tuple(sorted(engines)),
         targets=tuple(sorted(targets)),
+        required_token_fields=tuple(sorted(required_token_fields)),
     )
 
 
@@ -102,6 +117,13 @@ class ProfileCase:
     def targets(self) -> tuple[tuple[str, str], ...]:
         return self.profile.targets
 
+    @property
+    def required_token_fields(self) -> tuple[str, ...]:
+        return self.profile.required_token_fields
+
+
+def required_token_fields(profiles: Iterable[ProfileInfo | ProfileCase]) -> tuple[str, ...]:
+    return tuple(sorted({field for profile in profiles for field in profile.required_token_fields}))
 
 @dataclass(frozen=True, slots=True)
 class ProfileSelection:

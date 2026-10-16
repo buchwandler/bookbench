@@ -4,6 +4,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+UTTERPLAN_SPACY_POLICIES = frozenset({"auto", "off", "sm", "md", "lg", "trf"})
 
 @dataclass(frozen=True, slots=True)
 class SpeechScopeConfig:
@@ -24,6 +25,16 @@ class VoiceCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class UtterPlanConfig:
+    spacy: str = "auto"
+
+    def __post_init__(self) -> None:
+        if self.spacy not in UTTERPLAN_SPACY_POLICIES:
+            accepted = ", ".join(sorted(UTTERPLAN_SPACY_POLICIES))
+            raise ValueError(f"utterplan.spacy must be one of: {accepted}")
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     source: Path = Path("fixtures/smoke.md")
     language: str = "en-US"
@@ -35,6 +46,7 @@ class Config:
     required_engines: tuple[str, ...] = ()
     max_replans: int = 3
     fail_fast: bool = False
+    utterplan: UtterPlanConfig = field(default_factory=UtterPlanConfig)
     speechscope: SpeechScopeConfig = field(default_factory=SpeechScopeConfig)
     voices: tuple[VoiceCandidate, ...] = ()
     config_path: Path | None = None
@@ -49,6 +61,9 @@ def load_config(path: str | Path) -> Config:
     path = Path(path).resolve()
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     base = path.parent
+    utterplan_data = data.get("utterplan", {})
+    if not isinstance(utterplan_data, dict):
+        raise TypeError("utterplan must be a table")
     speech = data.get("speechscope", {})
     reference_mode = str(speech.get("reference_mode", "renderplan"))
     if reference_mode not in {"renderplan", "source"}:
@@ -78,6 +93,7 @@ def load_config(path: str | Path) -> Config:
         required_engines=tuple(str(x) for x in data.get("required_engines", [])),
         max_replans=max_replans,
         fail_fast=bool(data.get("fail_fast", False)),
+        utterplan=UtterPlanConfig(spacy=str(utterplan_data.get("spacy", "auto"))),
         speechscope=SpeechScopeConfig(
             backend=str(speech.get("backend", "redux")),
             device=str(speech.get("device", "cpu")),

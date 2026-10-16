@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from bookbench.config import Config, SpeechScopeConfig, VoiceCandidate
+from bookbench.config import Config, SpeechScopeConfig, UtterPlanConfig, VoiceCandidate
 from bookbench.profiles import ProfileCase, ProfileSelection, inspect_profile
 from bookbench.runner import CommandResult, Harness, PipelineError, ProfileRunContext
 
@@ -17,14 +17,18 @@ def _write_profile(
     *,
     engine: str = "piper",
     target_id: str = "en_US-amy-medium",
+    token_fields: tuple[str, ...] = (),
 ) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = (
         f'# Exact profile bytes\nprofile_id = "{PROFILE_ID}"\n\n'
         f'[roles.narrator.binding]\nrenderer = "{engine}"\ntarget_id = "{target_id}"\n'
-    ).encode()
-    path.write_bytes(content)
-    return content
+    )
+    if token_fields:
+        content += f"\n[roles.narrator.requirements]\ntoken_fields = {json.dumps(token_fields)}\n"
+    content_bytes = content.encode()
+    path.write_bytes(content_bytes)
+    return content_bytes
 
 def _config(
     tmp_path: Path,
@@ -65,14 +69,22 @@ def _selection_config(
     *,
     entries: tuple[tuple[str, str], ...] = (("piper", "piper"), ("kitten", "kitten")),
     required_engines: tuple[str, ...] = ("piper", "kitten"),
+    token_fields_by_label: dict[str, tuple[str, ...]] | None = None,
+    utterplan: UtterPlanConfig | None = None,
 ) -> Config:
     source = tmp_path / "source.md"
     source.write_text("# Smoke fixture\n", encoding="utf-8")
     profiles_dir = tmp_path / "profiles"
     voices = []
+    token_fields_by_label = token_fields_by_label or {}
     for label, engine in entries:
         profile_path = profiles_dir / f"{label}.renderprofile.toml"
-        _write_profile(profile_path, engine=engine, target_id=f"{engine}-target")
+        _write_profile(
+            profile_path,
+            engine=engine,
+            target_id=f"{engine}-target",
+            token_fields=token_fields_by_label.get(label, ()),
+        )
         voices.append(VoiceCandidate(name=label, profile=profile_path))
     return Config(
         source=source,
@@ -81,6 +93,7 @@ def _selection_config(
         cache_dir=tmp_path / "cache",
         required_engines=required_engines,
         voices=tuple(voices),
+        utterplan=utterplan or UtterPlanConfig(),
     )
 
 
@@ -865,6 +878,138 @@ def test_selected_run_ignores_unselected_required_engines_and_records_provenance
     assert "Selection: engine=piper" in report
     assert "Profiles: piper; engines: piper" in report
 
+    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    export_args = next(command.argv for command in harness.commands if command.argv[:2] == ["ssmdconvert", "txt"])
+    assert compile_args[compile_args.index("--spacy") + 1] == "off"
+    assert export_args[export_args.index("--spacy") + 1] == "off"
+    assert run_data["utterplan_linguistics"] == {
+        "required_token_fields": [],
+        "requires_spacy": False,
+        "configured_spacy": "auto",
+        "spacy_policy": "off",
+        "reason": "no_rich_token_requirements",
+        "status": "ready",
+        "error": None,
+    }
+
+
+def test_kokoro_selection_uses_required_spacy_and_records_provenance(tmp_path):
+    config = _selection_config(
+        tmp_path,
+        entries=(("kokoro", "kokoro"),),
+        required_engines=("kokoro",),
+        token_fields_by_label={"kokoro": ("span", "pos", "tag")},
+    )
+    harness = Harness(config, dry_run=True)
+    run_dir, results = harness.run(run_id="selected-kokoro")
+
+    assert [result.profile for result in results] == ["kokoro"]
+    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    export_args = next(command.argv for command in harness.commands if command.argv[:2] == ["ssmdconvert", "txt"])
+    assert compile_args[compile_args.index("--spacy") + 1] == "sm"
+    assert export_args[export_args.index("--spacy") + 1] == "off"
+    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["utterplan_linguistics"] == {
+        "required_token_fields": ["pos", "span", "tag"],
+        "requires_spacy": True,
+        "configured_spacy": "auto",
+        "spacy_policy": "sm",
+        "reason": "selected_profile_requirements",
+        "status": "ready",
+        "error": None,
+    }
+
+
+
+def test_run_json_captures_actual_utterplan_provider_metadata(tmp_path, monkeypatch):
+    config = _selection_config(
+        tmp_path,
+        entries=(("kokoro", "kokoro"),),
+        required_engines=("kokoro",),
+        token_fields_by_label={"kokoro": ("pos", "tag")},
+    )
+    harness = Harness(config, dry_run=True)
+    original_run = harness._run
+
+    def write_utterplan_metadata(argv, *, check=True):
+        result = original_run(argv, check=check)
+        if result.argv[:2] == ["utterplan", "compile-book"]:
+            plan_dir = Path(result.argv[2]) / "utterplan"
+            plan_dir.mkdir(parents=True)
+            (plan_dir / "chapter-0001.utterplan.toml").write_text(
+                '[[linguistics]]\nlanguage = "en-US"\nprovider = "spacy"\n'
+                'model = "en_core_web_sm"\nprovider_version = "3.8.16"\nmodel_version = "3.8.0"\n',
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(harness, "_run", write_utterplan_metadata)
+    run_dir, _results = harness.run(run_id="utterplan-provider-provenance")
+    linguistics = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["utterplan_linguistics"]
+
+    assert linguistics["plans"] == [
+        {
+            "plan": "utterplan/chapter-0001.utterplan.toml",
+            "language": "en-US",
+            "provider": "spacy",
+            "model": "en_core_web_sm",
+            "provider_version": "3.8.16",
+            "model_version": "3.8.0",
+        }
+    ]
+
+
+@pytest.mark.parametrize("policy", ("sm", "md", "lg", "trf"))
+def test_configured_spacy_tier_is_used_for_rich_profile(tmp_path, policy):
+    config = _selection_config(
+        tmp_path,
+        entries=(("kokoro", "kokoro"),),
+        required_engines=("kokoro",),
+        token_fields_by_label={"kokoro": ("pos", "tag")},
+        utterplan=UtterPlanConfig(spacy=policy),
+    )
+    harness = Harness(config, dry_run=True)
+    harness.run(run_id=f"kokoro-{policy}")
+
+    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    assert compile_args[compile_args.index("--spacy") + 1] == policy
+
+
+def test_full_six_profile_matrix_uses_union_of_selected_requirements(tmp_path):
+    engines = ("inflect", "kitten", "kokoro", "piper", "pocket", "supertonic")
+    config = _selection_config(
+        tmp_path,
+        entries=tuple((engine, engine) for engine in engines),
+        required_engines=engines,
+        token_fields_by_label={"kokoro": ("span", "pos", "tag")},
+    )
+    harness = Harness(config, dry_run=True)
+    _run_dir, results = harness.run(run_id="full-six-profile-matrix")
+
+    assert len(results) == 6
+    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    assert compile_args[compile_args.index("--spacy") + 1] == "sm"
+
+
+def test_spacy_off_conflict_fails_before_compilation(tmp_path):
+    config = _selection_config(
+        tmp_path,
+        entries=(("kokoro", "kokoro"),),
+        required_engines=("kokoro",),
+        token_fields_by_label={"kokoro": ("pos", "tag")},
+        utterplan=UtterPlanConfig(spacy="off"),
+    )
+    harness = Harness(config, dry_run=True)
+
+    with pytest.raises(PipelineError) as error:
+        harness.run(run_id="kokoro-spacy-off")
+
+    assert "selected profiles kokoro" in str(error.value)
+    assert "pos, tag" in str(error.value)
+    assert 'utterplan.spacy = "off"' in str(error.value)
+    assert harness.run_dir is None
+    assert harness.commands == []
+    assert not config.work_root.exists()
+
 
 def test_selected_profile_runs_only_the_exact_candidate(tmp_path):
     harness = Harness(_selection_config(tmp_path), dry_run=True)
@@ -891,12 +1036,11 @@ def test_unknown_engine_selection_fails_before_run_directory_or_commands(tmp_pat
     assert not config.work_root.exists()
 
 
-def test_doctor_checks_selected_profiles_without_unrelated_required_engines(tmp_path, monkeypatch):
+def _stub_doctor_dependencies(monkeypatch, harness):
     import subprocess
 
     import bookbench.runner as runner_module
 
-    harness = Harness(_selection_config(tmp_path))
     monkeypatch.setattr(runner_module.shutil, "which", lambda tool: f"/tools/{tool}")
     monkeypatch.setattr(harness, "versions", lambda: {tool: "version 1" for tool in runner_module.TOOLS})
     monkeypatch.setattr(
@@ -904,16 +1048,17 @@ def test_doctor_checks_selected_profiles_without_unrelated_required_engines(tmp_
         "_probe_speechscope_capabilities",
         lambda: {"supports_max_compound_wer": True},
     )
-    monkeypatch.setattr(
-        harness,
-        "_probe_engine_inventory",
-        lambda: ([{"id": "piper"}], None),
-    )
+    monkeypatch.setattr(harness, "_probe_engine_inventory", lambda: ([{"id": "piper"}], None))
 
     def validate_profile(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 0, "profile valid", "")
 
     monkeypatch.setattr(runner_module.subprocess, "run", validate_profile)
+
+
+def test_doctor_reports_ready_linguistics_for_selected_profiles(tmp_path, monkeypatch):
+    harness = Harness(_selection_config(tmp_path))
+    _stub_doctor_dependencies(monkeypatch, harness)
     diagnostics = harness.doctor(selection=ProfileSelection(engines=("piper",)))
 
     assert diagnostics["ok"] is True
@@ -925,6 +1070,38 @@ def test_doctor_checks_selected_profiles_without_unrelated_required_engines(tmp_
         "missing": [],
     }
     assert [profile["label"] for profile in diagnostics["profiles"]] == ["piper"]
-    assert diagnostics["engine_provenance"]["selected_targets"] == [
-        {"candidate_label": "piper", "engine_id": "piper", "target_id": "piper-target"}
-    ]
+    assert diagnostics["linguistics"] == {
+        "required_token_fields": [],
+        "requires_spacy": False,
+        "configured_spacy": "auto",
+        "spacy_policy": "off",
+        "reason": "no_rich_token_requirements",
+        "status": "ready",
+        "error": None,
+    }
+
+
+def test_doctor_fails_on_selected_profile_spacy_conflict_without_downloading_models(tmp_path, monkeypatch):
+    config = _selection_config(
+        tmp_path,
+        entries=(("kokoro", "kokoro"),),
+        required_engines=("kokoro",),
+        token_fields_by_label={"kokoro": ("span", "pos", "tag")},
+        utterplan=UtterPlanConfig(spacy="off"),
+    )
+    harness = Harness(config)
+    _stub_doctor_dependencies(monkeypatch, harness)
+
+    diagnostics = harness.doctor()
+
+    assert diagnostics["ok"] is False
+    assert diagnostics["linguistics"] == {
+        "required_token_fields": ["pos", "span", "tag"],
+        "requires_spacy": True,
+        "configured_spacy": "off",
+        "spacy_policy": "off",
+        "reason": "conflicting_configured_policy",
+        "status": "error",
+        "error": 'selected profiles kokoro require token fields pos, span, tag, but utterplan.spacy = "off"',
+    }
+    assert harness.commands == []

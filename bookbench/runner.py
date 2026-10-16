@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -22,6 +23,7 @@ from .profiles import (
     ProfileSelection,
     coverage,
     inspect_profile,
+    required_token_fields,
     select_profiles,
 )
 from .rendertext import renderplan_text
@@ -37,6 +39,8 @@ VERSION_PROBES = {
     "ffmpeg": ("ffmpeg", "-version"),
 }
 TOOLS = tuple(VERSION_PROBES)
+
+RICH_LINGUISTIC_FIELDS = frozenset({"pos", "tag", "morph"})
 
 PIPER_DEPENDENCY_PACKAGES = ("voicerender", "pipersynth", "onnxvoice", "piperg2p")
 
@@ -57,6 +61,60 @@ def _version_probe_failed(version: str | None) -> bool:
 
 class PipelineError(RuntimeError):
     pass
+
+
+
+def _utterplan_linguistics(profiles: list[ProfileCase], configured_spacy: str) -> dict[str, Any]:
+    fields = required_token_fields(profiles)
+    requires_spacy = bool(RICH_LINGUISTIC_FIELDS.intersection(fields))
+    selected_profiles = [
+        profile.label
+        for profile in profiles
+        if RICH_LINGUISTIC_FIELDS.intersection(profile.required_token_fields)
+    ]
+    error = None
+    if configured_spacy == "auto":
+        spacy_policy = "sm" if requires_spacy else "off"
+        reason = "selected_profile_requirements" if requires_spacy else "no_rich_token_requirements"
+    elif configured_spacy == "off" and requires_spacy:
+        spacy_policy = "off"
+        reason = "conflicting_configured_policy"
+        error = (
+            f"selected profiles {', '.join(selected_profiles)} require token fields {', '.join(fields)}, "
+            'but utterplan.spacy = "off"'
+        )
+    else:
+        spacy_policy = configured_spacy
+        reason = "configured_policy"
+    return {
+        "required_token_fields": list(fields),
+        "requires_spacy": requires_spacy,
+        "configured_spacy": configured_spacy,
+        "spacy_policy": spacy_policy,
+        "reason": reason,
+        "status": "error" if error else "ready",
+        "error": error,
+    }
+
+
+
+def _utterplan_plan_provenance(book: Path) -> list[dict[str, Any]]:
+    provenance = []
+    for path in sorted((book / "utterplan").glob("*.utterplan.toml")):
+        plan_data = tomllib.loads(path.read_text(encoding="utf-8"))
+        linguistics = plan_data.get("linguistics", [])
+        if not isinstance(linguistics, list):
+            continue
+        for item in linguistics:
+            if not isinstance(item, dict):
+                continue
+            record = {"plan": str(path.relative_to(book))}
+            for field in ("language", "provider", "model", "provider_version", "model_version"):
+                if field in item:
+                    record[field] = item[field]
+            if "provider" in record or "model" in record:
+                provenance.append(record)
+    return provenance
 
 
 def _configured_speechscope_thresholds(config: SpeechScopeConfig) -> dict[str, float]:
@@ -605,6 +663,7 @@ class Harness:
         profile_checks_pass = bool(profiles) and all(
             profile["valid"] and profile["validation"]["status"] == "passed" for profile in profiles
         )
+        linguistics = _utterplan_linguistics(valid_profiles, self.config.utterplan.spacy)
         tools_pass = all(
             item["available"] and item["version"] is not None and not item["version_probe_failed"]
             for item in tools.values()
@@ -622,7 +681,9 @@ class Harness:
                 and source["exists"]
                 and work_root["writable"]
                 and not missing_engines
+                and linguistics["status"] == "ready"
             ),
+            "linguistics": linguistics,
             "tools": tools,
             "speechscope_capabilities": speechscope_capabilities,
             "profiles": profiles,
@@ -942,6 +1003,9 @@ class Harness:
                 raise PipelineError(
                     f"Missing required engine profiles: {', '.join(sorted(missing))}; found: {', '.join(sorted(found))}"
                 )
+        utterplan_linguistics = _utterplan_linguistics(profiles, self.config.utterplan.spacy)
+        if utterplan_linguistics["error"]:
+            raise PipelineError(utterplan_linguistics["error"])
         if not self.config.source.is_file():
             raise PipelineError(f"Source not found: {self.config.source}")
 
@@ -963,6 +1027,7 @@ class Harness:
             "source_sha256": _file_sha256(self.config.source),
             "selected_chapters": self.config.chapters,
             "selection": selection_provenance,
+            "utterplan_linguistics": utterplan_linguistics,
             "dry_run": self.dry_run,
             "start_timestamp": self._run_started_at.isoformat(),
             "end_timestamp": None,
@@ -1069,7 +1134,11 @@ class Harness:
         self._current_stage = "ssmdconvert"
         self._run(["ssmdconvert", "txt", book, "-o", self.run_dir / "prepared.txt", "--spacy", "off"])
         self._current_stage = "renderplan"
-        self._run(["utterplan", "compile-book", book, "--spacy", "off", *self._chapter_args()])
+        self._run(["utterplan", "compile-book", book, "--spacy", utterplan_linguistics["spacy_policy"], *self._chapter_args()])
+
+        plan_provenance = _utterplan_plan_provenance(book)
+        if plan_provenance:
+            utterplan_linguistics["plans"] = plan_provenance
 
         results: list[ProfileResult] = []
         for profile in profiles:

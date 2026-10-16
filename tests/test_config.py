@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from bookbench.config import load_config
 
 
@@ -11,6 +13,24 @@ def test_load_example_config():
     assert cfg.speechscope.reference_mode == "renderplan"
     assert "piper" in cfg.required_engines
 
+    assert cfg.utterplan.spacy == "auto"
+
+
+@pytest.mark.parametrize("policy", ("auto", "off", "sm", "md", "lg", "trf"))
+def test_load_utterplan_spacy_policy(tmp_path, policy):
+    config_path = tmp_path / "bookbench.toml"
+    config_path.write_text(f'[utterplan]\nspacy = "{policy}"\n', encoding="utf-8")
+
+    assert load_config(config_path).utterplan.spacy == policy
+
+
+@pytest.mark.parametrize("policy", ("", "base", "small"))
+def test_load_config_rejects_unknown_utterplan_spacy_policy(tmp_path, policy):
+    config_path = tmp_path / "bookbench.toml"
+    config_path.write_text(f'[utterplan]\nspacy = "{policy}"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="utterplan.spacy must be one of"):
+        load_config(config_path)
 
 def _load_config_with_speechscope(tmp_path: Path, speechscope: str):
     config_path = tmp_path / "bookbench.toml"
