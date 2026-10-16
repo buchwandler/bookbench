@@ -49,11 +49,19 @@ def build_listening_report(run_dir: Path, results: list) -> Path:
         failed_stage = escape(getattr(result, "failed_stage", None) or "none")
         wer = "n/a" if result.wer is None else f"{result.wer:.4f}"
         cer = "n/a" if result.cer is None else f"{result.cer:.4f}"
+        compound_value = getattr(result, "compound_wer", None)
+        compound_wer = "n/a" if compound_value is None else f"{compound_value:.4f}"
+        boundary_count = getattr(result, "word_boundary_match_count", None)
+        boundary_variants = "n/a" if boundary_count is None else str(boundary_count)
+        if boundary_count:
+            details_link = _artifact_link(run_dir, getattr(result, "speechscope_report", None), "details")
+            if details_link:
+                boundary_variants = f"{boundary_variants} {details_link}"
         error = escape(result.error or "")
         rows.append(
             f"<tr><th>{escape(result.profile)}</th><td>{variant}</td>"
             f"<td>{escape(', '.join(result.engines))}</td><td>{status}</td>"
-            f"<td>{wer}</td><td>{cer}</td><td>{failed_stage}</td>"
+            f"<td>{compound_wer}</td><td>{wer}</td><td>{cer}</td><td>{boundary_variants}</td><td>{failed_stage}</td>"
             f"<td>{audio}</td><td>{artifact_links}<small>{error}</small></td></tr>"
         )
     html = (
@@ -64,10 +72,12 @@ table{border-collapse:collapse;width:100%}td,th{padding:1rem;border-bottom:1px s
 th{white-space:nowrap}audio{width:100%;min-width:220px}small{display:block;color:#995;margin-top:.4rem}
 @media(max-width:750px){table{display:block;overflow-x:auto}}</style></head><body>
 <h1>BookBench voice comparison</h1><p>Listen to each candidate in configured profile order.
-WER and CER measure acoustic transcript agreement against the selected reference. They are not
-subjective voice-quality scores and must not be used as a best-voice ranking. M4B exports,
-expected transcripts, and SpeechScope reports are linked for inspection.</p>
-<table><thead><tr><th>Candidate</th><th>Variant</th><th>Engine</th><th>Status</th><th>WER</th><th>CER</th>
+Compound WER is the default spoken-content gate and tolerates SpeechScope's bounded adjacent
+compound-word split/join variants. Strict WER remains a diagnostic for exact whitespace-tokenized
+word boundaries. CER is retained as an independent character-content check. These are validation
+metrics, not subjective voice-quality scores. M4B exports, expected transcripts, and SpeechScope
+reports are linked for inspection.</p>
+<table><thead><tr><th>Candidate</th><th>Variant</th><th>Engine</th><th>Status</th><th>Compound WER</th><th>Strict WER</th><th>CER</th><th>Boundary variants</th>
 <th>Failed stage</th><th>Recording</th><th>Artifacts and error</th></tr></thead><tbody>"""
         + "\n".join(rows)
         + "</tbody></table></body></html>"

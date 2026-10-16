@@ -13,7 +13,10 @@ backend = "redux"
 device = "cpu"
 normalization = "basic-v1"
 reference_mode = "renderplan"
-max_wer = 0.10
+# Practical tolerance for bounded compound-boundary variants; strict boundaries are opt-in.
+max_compound_wer = 0.10
+# Optional additional strict token-boundary limit:
+# max_wer = 0.10
 max_cer = 0.05
 
 [[voices]]

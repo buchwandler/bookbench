@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from bookbench.config import Config, VoiceCandidate
+from bookbench.config import Config, SpeechScopeConfig, VoiceCandidate
 from bookbench.profiles import ProfileCase, inspect_profile
-from bookbench.runner import CommandResult, Harness, PipelineError
+from bookbench.runner import CommandResult, Harness, PipelineError, ProfileRunContext
 
 PROFILE_ID = "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 
@@ -21,7 +21,13 @@ def _write_profile(path: Path) -> bytes:
     return content
 
 
-def _config(tmp_path: Path, profile_path: Path, *, max_replans: int = 3) -> Config:
+def _config(
+    tmp_path: Path,
+    profile_path: Path,
+    *,
+    max_replans: int = 3,
+    speechscope: SpeechScopeConfig | None = None,
+) -> Config:
     source = tmp_path / "source.md"
     source.write_text("# Smoke fixture\n", encoding="utf-8")
     config_path = tmp_path / "bookbench.toml"
@@ -44,8 +50,59 @@ def _config(tmp_path: Path, profile_path: Path, *, max_replans: int = 3) -> Conf
         voices=(VoiceCandidate(name="voice-a-candidate", profile=profile_path),),
         max_replans=max_replans,
         config_path=config_path,
+        speechscope=speechscope if speechscope is not None else SpeechScopeConfig(),
     )
 
+
+
+def _speechscope_run_context(tmp_path: Path) -> ProfileRunContext:
+    profile_path = tmp_path / "profiles" / "piper.renderprofile.toml"
+    _write_profile(profile_path)
+    profile = ProfileCase("candidate", inspect_profile(profile_path))
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    return ProfileRunContext(
+        profile=profile,
+        staged_profile=profile_path,
+        variant_dir=tmp_path / "variant",
+        export_path=export_dir / "candidate.m4b",
+        listening_path=export_dir / "candidate.listen.mp3",
+        validation_wav=export_dir / "candidate.validation.wav",
+        expected_text=export_dir / "candidate.expected.txt",
+        policy_path=export_dir / "candidate.speechscope-policy.json",
+        speechscope_report=export_dir / "candidate.speechscope.json",
+    )
+
+
+@pytest.mark.parametrize(
+    ("strict_wer", "expected_keys"),
+    [(None, {"max_compound_wer", "max_cer"}), (0.0, {"max_compound_wer", "max_wer", "max_cer"})],
+)
+def test_speechscope_policy_serializes_enabled_thresholds(tmp_path, strict_wer, expected_keys):
+    context = _speechscope_run_context(tmp_path)
+    config = Config(speechscope=SpeechScopeConfig(max_wer=strict_wer))
+    Harness(config, dry_run=True)._run_speechscope(context)
+
+    policy = json.loads(context.policy_path.read_text(encoding="utf-8"))
+    assert set(policy) == expected_keys | {"schema_version", "missing_timing"}
+    assert policy["max_compound_wer"] == 0.0
+    assert policy["max_cer"] == 0.0
+    if strict_wer is None:
+        assert "max_wer" not in policy
+    else:
+        assert policy["max_wer"] == strict_wer
+
+
+def test_speechscope_failure_message_names_failed_rules():
+    from bookbench.runner import _speechscope_failure_message
+
+    message = _speechscope_failure_message(
+        {"rules": [{"name": "max_compound_wer", "observed": 0.0526, "expected": 0.0, "status": "fail"}]}
+    )
+
+    assert "max_compound_wer" in message
+    assert "observed=0.0526" in message
+    assert "expected=0.0" in message
 
 
 
@@ -75,12 +132,27 @@ def _run_voice_render_scenario(
     *,
     max_replans=3,
     replan_returncode=0,
+    speechscope_payload=None,
+    speechscope=None,
+    speechscope_returncode=0,
 ):
     import bookbench.runner as runner_module
 
     profile_path = tmp_path / "profiles" / "piper.renderprofile.toml"
     _write_profile(profile_path)
-    harness = Harness(_config(tmp_path, profile_path, max_replans=max_replans))
+    harness = Harness(_config(tmp_path, profile_path, max_replans=max_replans, speechscope=speechscope))
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_capabilities",
+        lambda: {
+            "status": "supported",
+            "command": ["speechscope", "metrics", "list", "--format", "json"],
+            "metrics": ["wer", "compound_wer", "cer"],
+            "supports_compound_wer": True,
+            "supports_max_compound_wer": True,
+            "error": None,
+        },
+    )
     monkeypatch.setattr(harness, "versions", dict)
     monkeypatch.setattr(runner_module, "renderplan_text", lambda _variant_dir: "Expected speech.\n")
     queued_results = iter(render_results)
@@ -98,7 +170,8 @@ def _run_voice_render_scenario(
         if args[:2] == ["speechscope", "analyze"]:
             report_path = Path(args[args.index("--json") + 1])
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(json.dumps({"metrics": {}, "evaluation": {"status": "pass"}}), encoding="utf-8")
+            report_path.write_text(json.dumps(speechscope_payload or {"metrics": {}, "evaluation": {"status": "pass"}}), encoding="utf-8")
+            result.returncode = speechscope_returncode
         harness.commands.append(result)
         commands.append(result)
         return result
@@ -107,6 +180,112 @@ def _run_voice_render_scenario(
     run_dir, results = harness.run(run_id="strict-voice-render")
     return harness, run_dir, results, commands
 
+
+
+def test_piper_boundary_variant_passes_with_nonzero_strict_wer(tmp_path, monkeypatch):
+    payload = {
+        "metrics": {
+            "wer": 2 / 19,
+            "compound_wer": 0.0,
+            "cer": 0.0,
+            "content_match": True,
+            "word_boundary_match_count": 1,
+        },
+        "evaluation": {
+            "status": "pass",
+            "rules": [
+                {"name": "max_compound_wer", "observed": 0.0, "expected": 0.0, "status": "pass"},
+                {"name": "max_cer", "observed": 0.0, "expected": 0.0, "status": "pass"},
+            ],
+        },
+    }
+    _, run_dir, results, _ = _run_voice_render_scenario(
+        tmp_path, monkeypatch, [], speechscope_payload=payload
+    )
+
+    result = results[0]
+    assert result.status == "pass"
+    assert result.failed_stage is None
+    assert result.wer == pytest.approx(2 / 19)
+    assert result.compound_wer == 0.0
+    assert result.cer == 0.0
+    assert result.content_match is True
+    assert result.word_boundary_match_count == 1
+
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["speechscope_gate"] == {"max_compound_wer": 0.0, "max_cer": 0.0}
+    assert summary["results"][0]["wer"] == pytest.approx(2 / 19)
+    assert summary["results"][0]["compound_wer"] == 0.0
+    assert summary["results"][0]["content_match"] is True
+    assert summary["results"][0]["word_boundary_match_count"] == 1
+
+
+
+def test_true_lexical_error_fails_closed_with_rule_details(tmp_path, monkeypatch):
+    payload = {
+        "metrics": {
+            "wer": 1 / 19,
+            "compound_wer": 1 / 19,
+            "cer": 0.012987012987012988,
+            "content_match": False,
+            "word_boundary_match_count": 0,
+        },
+        "evaluation": {
+            "status": "fail",
+            "rules": [
+                {
+                    "name": "max_compound_wer",
+                    "observed": 1 / 19,
+                    "expected": 0.0,
+                    "status": "fail",
+                }
+            ],
+        },
+    }
+    _, _, results, _ = _run_voice_render_scenario(
+        tmp_path, monkeypatch, [], speechscope_payload=payload, speechscope_returncode=1
+    )
+
+    assert results[0].status == "fail"
+    assert results[0].failed_stage == "speechscope"
+    assert "max_compound_wer" in results[0].error
+
+
+def test_explicit_strict_wer_still_fails_boundary_variant(tmp_path, monkeypatch):
+    payload = {
+        "metrics": {
+            "wer": 2 / 19,
+            "compound_wer": 0.0,
+            "cer": 0.0,
+            "content_match": True,
+            "word_boundary_match_count": 1,
+        },
+        "evaluation": {
+            "status": "fail",
+            "rules": [
+                {"name": "max_compound_wer", "observed": 0.0, "expected": 0.0, "status": "pass"},
+                {"name": "max_wer", "observed": 2 / 19, "expected": 0.0, "status": "fail"},
+                {"name": "max_cer", "observed": 0.0, "expected": 0.0, "status": "pass"},
+            ],
+        },
+    }
+    _, run_dir, results, _ = _run_voice_render_scenario(
+        tmp_path,
+        monkeypatch,
+        [],
+        speechscope_payload=payload,
+        speechscope_returncode=1,
+        speechscope=SpeechScopeConfig(max_wer=0.0),
+    )
+
+    assert results[0].status == "fail"
+    assert results[0].failed_stage == "speechscope"
+    assert "max_wer" in results[0].error
+    policy_path = run_dir / "exports" / "voice-a-candidate.speechscope-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    assert policy["max_compound_wer"] == 0.0
+    assert policy["max_wer"] == 0.0
+    assert policy["max_cer"] == 0.0
 
 def _render_failure(items):
     return 1, json.dumps({"items": items}), ""
@@ -322,6 +501,18 @@ def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch
     _write_profile(profile_path)
     profile = inspect_profile(profile_path)
     harness = Harness(_config(tmp_path, profile_path))
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_capabilities",
+        lambda: {
+            "status": "supported",
+            "command": ["speechscope", "metrics", "list", "--format", "json"],
+            "metrics": ["compound_wer"],
+            "supports_compound_wer": True,
+            "supports_max_compound_wer": True,
+            "error": None,
+        },
+    )
     monkeypatch.setattr(harness, "versions", dict)
     looked_up = []
 
@@ -368,6 +559,7 @@ def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch
     assert run_data["source_sha256"] == hashlib.sha256(harness.config.source.read_bytes()).hexdigest()
     assert run_data["selected_chapters"] == "all"
     assert run_data["dry_run"] is False
+    assert run_data["speechscope_capabilities"]["supports_max_compound_wer"] is True
     assert run_data["start_timestamp"] and run_data["end_timestamp"]
     assert profile_data["candidate_label"] == "voice-a-candidate"
     assert profile_data["original_path"] == str(profile_path.resolve())
@@ -487,6 +679,18 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
     validation_commands = []
     monkeypatch.setattr(runner_module.shutil, "which", lambda tool: f"/tools/{tool}")
     monkeypatch.setattr(harness, "versions", lambda: {tool: "version 1" for tool in runner_module.TOOLS})
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_capabilities",
+        lambda: {
+            "status": "supported",
+            "command": ["speechscope", "metrics", "list", "--format", "json"],
+            "metrics": ["compound_wer"],
+            "supports_compound_wer": True,
+            "supports_max_compound_wer": True,
+            "error": None,
+        },
+    )
 
     def fake_run(argv, **kwargs):
         args = [str(value) for value in argv]
@@ -515,6 +719,7 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
     assert diagnostics["source"]["exists"] is True
     assert diagnostics["work_root"]["writable"] is True
     assert diagnostics["ok"] is False
+    assert diagnostics["speechscope_capabilities"]["supports_max_compound_wer"] is True
     engine_provenance = diagnostics["engine_provenance"]
     assert engine_provenance["status"] == "captured"
     assert engine_provenance["package_versions"] == {
@@ -529,3 +734,52 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
     ]
     assert len(validation_commands) == 2
     assert all(command[:3] == ["voicerender", "profile", "validate"] for command in validation_commands)
+
+
+
+def test_speechscope_capability_probe_uses_metric_listing(monkeypatch):
+    import subprocess
+
+    import bookbench.runner as runner_module
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(["wer", "compound_wer", "cer"]), "")
+
+    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None)
+    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+    capabilities = Harness(Config())._probe_speechscope_capabilities()
+
+    assert calls == [["speechscope", "metrics", "list", "--format", "json"]]
+    assert capabilities["status"] == "supported"
+    assert capabilities["supports_compound_wer"] is True
+    assert capabilities["supports_max_compound_wer"] is True
+
+
+def test_run_rejects_unsupported_compound_gate_before_synthesis(tmp_path, monkeypatch):
+    profile_path = tmp_path / "profiles" / "piper.renderprofile.toml"
+    _write_profile(profile_path)
+    harness = Harness(_config(tmp_path, profile_path))
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_capabilities",
+        lambda: {
+            "status": "unsupported",
+            "command": ["speechscope", "metrics", "list", "--format", "json"],
+            "metrics": ["wer", "cer"],
+            "supports_compound_wer": False,
+            "supports_max_compound_wer": False,
+            "error": "SpeechScope does not report the compound_wer metric",
+        },
+    )
+
+    with pytest.raises(PipelineError, match="max_compound_wer.*compound_wer support"):
+        harness.run(run_id="unsupported-speechscope")
+
+    assert harness.commands == []
+    run_data = json.loads((harness.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_data["failed_stage"] == "speechscope_capability"
+    assert "max_compound_wer" in run_data["error"]

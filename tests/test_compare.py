@@ -30,7 +30,10 @@ def test_listening_report(tmp_path):
         profile="voice-a",
         engines=["piper"],
         status="pass",
-        wer=0.0,
+        wer=0.10526315789473684,
+        compound_wer=0.0,
+        content_match=True,
+        word_boundary_match_count=1,
         cer=0.0,
         error=None,
         variant="voice-a--1234567890ab",
@@ -47,7 +50,11 @@ def test_listening_report(tmp_path):
     assert 'href="exports/voice-a.m4b">M4B export</a>' in text
     assert 'href="exports/voice-a.speechscope.json">SpeechScope JSON</a>' in text
     assert 'href="exports/voice-a.expected.txt">Expected transcript</a>' in text
-    assert "acoustic transcript agreement" in text
+    assert "Compound WER" in text
+    assert "Strict WER" in text
+    assert "CER" in text
+    assert "Boundary variants" in text
+    assert '<td>0.0000</td><td>0.1053</td><td>0.0000</td><td>1 <a href="exports/voice-a.speechscope.json">details</a>' in text
     assert "subjective voice-quality scores" in text
 
 
@@ -59,6 +66,9 @@ def test_listening_report_orders_candidates_and_escapes_failure_details(tmp_path
             engines=["piper"],
             status="error",
             wer=None,
+            compound_wer=None,
+            content_match=None,
+            word_boundary_match_count=None,
             cer=0.125,
             failed_stage="renderplan",
             error="failure <details>",
@@ -71,6 +81,9 @@ def test_listening_report_orders_candidates_and_escapes_failure_details(tmp_path
             engines=["other"],
             status="pass",
             wer=0.0,
+            compound_wer=0.0,
+            content_match=True,
+            word_boundary_match_count=0,
             cer=0.0,
             failed_stage=None,
             error=None,

@@ -11,8 +11,9 @@ class SpeechScopeConfig:
     device: str = "cpu"
     model: str | None = None
     normalization: str = "basic-v1"
-    max_wer: float = 0.0
-    max_cer: float = 0.0
+    max_compound_wer: float | None = 0.0
+    max_cer: float | None = 0.0
+    max_wer: float | None = None
     reference_mode: str = "renderplan"
 
 
@@ -82,8 +83,9 @@ def load_config(path: str | Path) -> Config:
             device=str(speech.get("device", "cpu")),
             model=str(speech["model"]) if speech.get("model") is not None else None,
             normalization=str(speech.get("normalization", "basic-v1")),
-            max_wer=float(speech.get("max_wer", 0.0)),
-            max_cer=float(speech.get("max_cer", 0.0)),
+            max_compound_wer=float(speech["max_compound_wer"]) if "max_compound_wer" in speech else 0.0,
+            max_cer=float(speech["max_cer"]) if "max_cer" in speech else 0.0,
+            max_wer=float(speech["max_wer"]) if "max_wer" in speech else None,
             reference_mode=reference_mode,
         ),
         config_path=path,

@@ -5,7 +5,7 @@
 BookBench is the **end-to-end acceptance and comparison harness** for the Buchwandler audiobook
 pipeline. It does not own speech semantics, planning, rendering, composition, export,
 or ASR. Those responsibilities stay in their existing repositories. BookBench only
-executes the public contracts, records evidence, and decides pass/fail.
+executes public contracts, records evidence, and reflects each component's authoritative evaluation in run status.
 
 ## Test graph
 
@@ -41,6 +41,20 @@ There are two different notions of equality:
 The acoustic oracle therefore defaults to the ordered `kind = "speech"` text in the
 active RenderPlans. Comparing ASR directly with the original source can be wrong when
 normalization or SSMD substitutions intentionally change the spoken form.
+
+## Compound-aware spoken-content gate
+
+BookBench's default exact spoken-content policy uses SpeechScope `max_compound_wer = 0.0` and
+`max_cer = 0.0`. This rejects true lexical substitutions, deletions, and insertions while allowing
+only SpeechScope's bounded adjacent compound-word split/join equivalences. Strict `max_wer` remains
+an opt-in exact whitespace-token-boundary rule and is also retained as diagnostic evidence. If both
+word thresholds are configured, both must pass. SpeechScope owns comparison and threshold evaluation;
+BookBench uses its evaluation result and exit code rather than recomputing pass/fail. Reports preserve
+compound WER, strict WER, CER, content match, and accepted boundary-variant counts separately.
+
+For existing configs that set `max_wer = 0.0` but intend to tolerate variants such as
+`audiobook` / `audio book`, migrate that key to `max_compound_wer = 0.0`; configure both only when
+strict token-boundary equality is intentional.
 
 ## Why decode after export
 

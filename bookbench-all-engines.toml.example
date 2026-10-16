@@ -13,6 +13,9 @@ required_engines = ["kokoro", "piper", "pocket", "kitten", "sopro", "supertonic"
 backend = "redux"
 device = "cpu"
 normalization = "basic-v1"
-max_wer = 0.0
+# Default exact spoken-content gate with bounded compound-boundary tolerance.
+max_compound_wer = 0.0
+# Optional strict token-boundary gate:
+# max_wer = 0.0
 max_cer = 0.0
 reference_mode = "renderplan"

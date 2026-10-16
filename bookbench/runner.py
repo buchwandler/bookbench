@@ -16,7 +16,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .config import Config, SpeechScopeConfig
 from .profiles import ProfileCase, coverage, discover_profiles, inspect_profile
 from .rendertext import renderplan_text
 
@@ -51,6 +51,25 @@ def _version_probe_failed(version: str | None) -> bool:
 
 class PipelineError(RuntimeError):
     pass
+
+
+def _configured_speechscope_thresholds(config: SpeechScopeConfig) -> dict[str, float]:
+    thresholds = {}
+    for name in ("max_compound_wer", "max_wer", "max_cer"):
+        value = getattr(config, name)
+        if value is not None:
+            thresholds[name] = value
+    return thresholds
+
+
+def _speechscope_failure_message(evaluation: dict) -> str:
+    failed = [rule for rule in evaluation.get("rules", []) if rule.get("status") == "fail"]
+    if not failed:
+        return "SpeechScope threshold failure"
+    details = ", ".join(
+        f"{rule.get('name')} observed={rule.get('observed')} expected={rule.get('expected')}" for rule in failed
+    )
+    return f"SpeechScope threshold failure: {details}"
 
 
 def _file_sha256(path: Path) -> str:
@@ -177,7 +196,10 @@ class ProfileResult:
     export: str | None = None
     speechscope_report: str | None = None
     wer: float | None = None
+    compound_wer: float | None = None
     cer: float | None = None
+    content_match: bool | None = None
+    word_boundary_match_count: int | None = None
     error: str | None = None
     failed_stage: str | None = None
 
@@ -279,6 +301,74 @@ class Harness:
                 out[tool] = "probe_failed(exit=0): no version output"
         return out
 
+
+    def _probe_speechscope_capabilities(self) -> dict[str, Any]:
+        command = ["speechscope", "metrics", "list", "--format", "json"]
+        if shutil.which("speechscope") is None:
+            return {
+                "status": "unavailable",
+                "command": command,
+                "metrics": [],
+                "supports_compound_wer": False,
+                "supports_max_compound_wer": False,
+                "error": "speechscope is not available on PATH",
+            }
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(command, text=True, capture_output=True, check=False)
+        except OSError as exc:
+            result = CommandResult(command, 127, time.monotonic() - started, "", str(exc))
+            self._record_command(result)
+            return {
+                "status": "probe_failed",
+                "command": command,
+                "metrics": [],
+                "supports_compound_wer": False,
+                "supports_max_compound_wer": False,
+                "error": str(exc),
+            }
+        result = CommandResult(command, proc.returncode, time.monotonic() - started, proc.stdout, proc.stderr)
+        self._record_command(result)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            return {
+                "status": "probe_failed",
+                "command": command,
+                "metrics": [],
+                "supports_compound_wer": False,
+                "supports_max_compound_wer": False,
+                "error": detail,
+            }
+        try:
+            metrics = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            return {
+                "status": "probe_failed",
+                "command": command,
+                "metrics": [],
+                "supports_compound_wer": False,
+                "supports_max_compound_wer": False,
+                "error": f"invalid SpeechScope metric capability response: {exc.msg}",
+            }
+        if not isinstance(metrics, list) or any(not isinstance(metric, str) for metric in metrics):
+            return {
+                "status": "probe_failed",
+                "command": command,
+                "metrics": [],
+                "supports_compound_wer": False,
+                "supports_max_compound_wer": False,
+                "error": "SpeechScope metric capability response must be a list of strings",
+            }
+        supported = "compound_wer" in metrics
+        return {
+            "status": "supported" if supported else "unsupported",
+            "command": command,
+            "metrics": metrics,
+            "supports_compound_wer": supported,
+            "supports_max_compound_wer": supported,
+            "error": None if supported else "SpeechScope does not report the compound_wer metric",
+        }
+
     def _probe_engine_inventory(self) -> tuple[list[dict], str | None]:
         argv = ["voicerender", "engines", "list", "--json"]
         started = time.monotonic()
@@ -332,6 +422,7 @@ class Harness:
     def doctor(self) -> dict:
         tool_paths = {tool: shutil.which(tool) for tool in TOOLS}
         tool_versions = self.versions()
+        speechscope_capabilities = self._probe_speechscope_capabilities()
         tools = {
             tool: {
                 "path": tool_paths[tool],
@@ -446,9 +537,14 @@ class Harness:
             item["available"] and item["version"] is not None and not item["version_probe_failed"]
             for item in tools.values()
         )
+        speechscope_capability_pass = (
+            self.config.speechscope.max_compound_wer is None
+            or speechscope_capabilities["supports_max_compound_wer"]
+        )
         return {
             "ok": (
                 tools_pass
+                and speechscope_capability_pass
                 and profile_checks_pass
                 and not duplicate_variants
                 and source["exists"]
@@ -456,6 +552,7 @@ class Harness:
                 and not missing_engines
             ),
             "tools": tools,
+            "speechscope_capabilities": speechscope_capabilities,
             "profiles": profiles,
             "duplicate_variants": duplicate_variants,
             "source": source,
@@ -645,8 +742,7 @@ class Harness:
             json.dumps(
                 {
                     "schema_version": "1",
-                    "max_wer": self.config.speechscope.max_wer,
-                    "max_cer": self.config.speechscope.max_cer,
+                    **_configured_speechscope_thresholds(self.config.speechscope),
                     "missing_timing": "review",
                 },
                 indent=2,
@@ -712,8 +808,11 @@ class Harness:
             export=str(context.export_path),
             speechscope_report=str(context.speechscope_report),
             wer=metrics.get("wer"),
+            compound_wer=metrics.get("compound_wer"),
             cer=metrics.get("cer"),
-            error=None if status == "pass" else "SpeechScope threshold failure",
+            content_match=metrics.get("content_match"),
+            word_boundary_match_count=metrics.get("word_boundary_match_count"),
+            error=None if status == "pass" else _speechscope_failure_message(evaluation),
             failed_stage="speechscope" if status != "pass" else None,
         )
 
@@ -811,6 +910,25 @@ class Harness:
                     "staged_sha256": None,
                 }
             )
+        if self.dry_run or self.config.speechscope.max_compound_wer is None:
+            speechscope_capabilities = {
+                "status": "not_probed",
+                "command": ["speechscope", "metrics", "list", "--format", "json"],
+                "metrics": [],
+                "supports_compound_wer": None,
+                "supports_max_compound_wer": None,
+                "error": None,
+            }
+        else:
+            self._current_stage = "speechscope_capability"
+            speechscope_capabilities = self._probe_speechscope_capabilities()
+            if not speechscope_capabilities["supports_max_compound_wer"]:
+                detail = speechscope_capabilities.get("error") or "compound_wer capability is unavailable"
+                raise PipelineError(
+                    "Configured SpeechScope threshold max_compound_wer requires compound_wer support; "
+                    f"{detail}"
+                )
+        self._run_metadata["speechscope_capabilities"] = speechscope_capabilities
         self._write_provenance()
         export_dir = self.run_dir / "exports"
         book_epub = self.run_dir / "source.epub"
@@ -893,6 +1011,7 @@ class Harness:
             "run_id": run_id,
             "source": str(self.config.source),
             "book": str(book),
+            "speechscope_gate": _configured_speechscope_thresholds(self.config.speechscope),
             "results": [asdict(x) for x in results],
             "passed": sum(x.status == "pass" for x in results),
             "failed": sum(x.status != "pass" for x in results),
