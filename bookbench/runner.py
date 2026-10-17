@@ -126,6 +126,16 @@ def _configured_speechscope_thresholds(config: SpeechScopeConfig) -> dict[str, f
     return thresholds
 
 
+def _speechscope_config_provenance(config: SpeechScopeConfig) -> dict[str, Any]:
+    return {
+        "backend": config.backend,
+        "device": config.device,
+        "model": config.model,
+        "normalization": config.normalization,
+        "reference_mode": config.reference_mode,
+    }
+
+
 def _speechscope_failure_message(evaluation: dict) -> str:
     failed = [rule for rule in evaluation.get("rules", []) if rule.get("status") == "fail"]
     if not failed:
@@ -433,6 +443,67 @@ class Harness:
             "error": None if supported else "SpeechScope does not report the compound_wer metric",
         }
 
+    def _probe_speechscope_backend(self) -> dict[str, Any]:
+        speech = self.config.speechscope
+        command = ["speechscope", "doctor", "--backend", speech.backend]
+        if speech.model:
+            command.extend(["--model", speech.model])
+        command.extend(["--device", speech.device, "--format", "json"])
+        result = {
+            "ok": False,
+            "status": "unavailable",
+            "command": command,
+            "backend": speech.backend,
+            "device": speech.device,
+            "model": speech.model,
+            "runtime": {},
+            "model_store": {},
+            "error": "speechscope is not available on PATH",
+        }
+        if shutil.which("speechscope") is None:
+            return result
+
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(command, text=True, capture_output=True, check=False)
+        except OSError as exc:
+            self._record_command(CommandResult(command, 127, time.monotonic() - started, "", str(exc)))
+            result.update(status="probe_failed", error=str(exc))
+            return result
+
+        checked = CommandResult(command, proc.returncode, time.monotonic() - started, proc.stdout, proc.stderr)
+        self._record_command(checked)
+        try:
+            payload = json.loads(checked.stdout)
+        except json.JSONDecodeError as exc:
+            result.update(
+                status="probe_failed",
+                error=f"invalid SpeechScope readiness response: {exc.msg}",
+            )
+            return result
+        if not isinstance(payload, dict):
+            result.update(status="probe_failed", error="SpeechScope readiness response must be a JSON object")
+            return result
+
+        ready = checked.returncode == 0 and payload.get("ok") is True
+        detail = payload.get("error")
+        if not detail:
+            errors = payload.get("errors")
+            if isinstance(errors, list):
+                detail = "; ".join(str(error) for error in errors) or None
+            elif errors:
+                detail = str(errors)
+        if not ready and not detail:
+            detail = checked.stderr.strip() or checked.stdout.strip() or "SpeechScope doctor reported not ready"
+        result.update(
+            ok=ready,
+            status="ready" if ready else "not_ready",
+            runtime=payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {},
+            model_store=payload.get("model_store") if isinstance(payload.get("model_store"), dict) else {},
+            error=None if ready else str(detail),
+        )
+        return result
+
     def _probe_engine_inventory(self) -> tuple[list[dict], str | None]:
         argv = ["voicerender", "engines", "list", "--json"]
         started = time.monotonic()
@@ -551,6 +622,7 @@ class Harness:
         tool_paths = {tool: shutil.which(tool) for tool in TOOLS}
         tool_versions = self.versions()
         speechscope_capabilities = self._probe_speechscope_capabilities()
+        speechscope_backend = self._probe_speechscope_backend()
         tools = {
             tool: {
                 "path": tool_paths[tool],
@@ -675,6 +747,7 @@ class Harness:
         return {
             "ok": (
                 tools_pass
+                and speechscope_backend["ok"]
                 and speechscope_capability_pass
                 and profile_checks_pass
                 and not duplicate_variants
@@ -686,6 +759,7 @@ class Harness:
             "linguistics": linguistics,
             "tools": tools,
             "speechscope_capabilities": speechscope_capabilities,
+            "speechscope_backend": speechscope_backend,
             "profiles": profiles,
             "duplicate_variants": duplicate_variants,
             "source": source,
@@ -1028,6 +1102,7 @@ class Harness:
             "selected_chapters": self.config.chapters,
             "selection": selection_provenance,
             "utterplan_linguistics": utterplan_linguistics,
+            "speechscope": _speechscope_config_provenance(self.config.speechscope),
             "dry_run": self.dry_run,
             "start_timestamp": self._run_started_at.isoformat(),
             "end_timestamp": None,
@@ -1169,6 +1244,7 @@ class Harness:
             "book": str(book),
             "selection": selection_provenance,
             "speechscope_gate": _configured_speechscope_thresholds(self.config.speechscope),
+            "speechscope": _speechscope_config_provenance(self.config.speechscope),
             "results": [asdict(x) for x in results],
             "passed": sum(x.status == "pass" for x in results),
             "failed": sum(x.status != "pass" for x in results),

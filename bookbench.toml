@@ -16,8 +16,9 @@ required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "supertoni
 spacy = "auto"
 
 [speechscope]
-backend = "redux"
+backend = "whispercpp"
 device = "cpu"
+model = "whispercpp:tiny.en-q5_1"
 normalization = "basic-v1"
 # Exact spoken-content gate; SpeechScope allows only its bounded compound-boundary variants.
 max_compound_wer = 0.0

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from bookbench.config import load_config
+from bookbench.config import SpeechScopeConfig, load_config
 
 
 def test_load_example_config():
@@ -11,9 +11,29 @@ def test_load_example_config():
     assert cfg.config_path == root / "bookbench.toml"
     assert cfg.language == "en-US"
     assert cfg.speechscope.reference_mode == "renderplan"
+    assert cfg.speechscope.backend == "whispercpp"
+    assert cfg.speechscope.model == "whispercpp:tiny.en-q5_1"
+    assert cfg.speechscope.device == "cpu"
     assert "piper" in cfg.required_engines
 
     assert cfg.utterplan.spacy == "auto"
+
+def test_load_speechscope_whispercpp_configuration_exactly(tmp_path):
+    config_path = tmp_path / "bookbench.toml"
+    config_path.write_text(
+        "[speechscope]\n"
+        'backend = "whispercpp"\n'
+        'device = "cpu"\n'
+        'model = "whispercpp:tiny.en-q5_1"\n',
+        encoding="utf-8",
+    )
+
+    assert load_config(config_path).speechscope == SpeechScopeConfig(
+        backend="whispercpp",
+        device="cpu",
+        model="whispercpp:tiny.en-q5_1",
+    )
+
 
 
 @pytest.mark.parametrize("policy", ("auto", "off", "sm", "md", "lg", "trf"))

@@ -1,0 +1,127 @@
+# Requires the SpeechScope implementation described in 01_speechscope_whispercpp_models.md.
+# Current Node-24 action majors require a sufficiently recent self-hosted Actions runner.
+name: E2E engine (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      engine:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SPEECHSCOPE_MODEL_HOME: ${{ github.workspace }}/.ci-cache/speechscope-models
+
+jobs:
+  e2e:
+    runs-on: self-hosted
+    concurrency:
+      group: bookbench-e2e-${{ inputs.engine }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install BookBench checkout
+        run: python -m pip install -e .
+
+      - name: Resolve configured ASR model and cache fingerprint
+        id: asr
+        shell: bash
+        env:
+          ENGINE: ${{ inputs.engine }}
+        run: |
+          set -euo pipefail
+
+          python - <<'PY' > "$RUNNER_TEMP/bookbench-asr.env"
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("bookbench.toml").read_text(encoding="utf-8"))
+          speech = data["speechscope"]
+          model = speech["model"]
+          backend = speech["backend"]
+          device = speech["device"]
+
+          if backend != "whispercpp":
+              raise SystemExit(f"CI expects speechscope.backend=whispercpp, got {backend!r}")
+          if not model.startswith("whispercpp:"):
+              raise SystemExit(f"CI expects a canonical whispercpp model ref, got {model!r}")
+
+          raw = subprocess.check_output(
+              ["speechscope", "models", "show", model, "--format", "json"],
+              text=True,
+          )
+          record = json.loads(raw)
+          primary = [a for a in record["artifacts"] if a.get("primary")]
+          if len(primary) != 1:
+              raise SystemExit("catalog record must contain exactly one primary artifact")
+          digest = primary[0]["sha256"]
+          slug = model.replace(":", "-").replace("/", "-")
+          cache_key = f"speechscope-{os.uname().machine}-{slug}-{digest}"
+
+          profile = Path("profiles") / f"{os.environ['ENGINE']}.renderprofile.toml"
+          if not profile.is_file():
+              raise SystemExit(f"missing engine profile: {profile}")
+          profile_sha = hashlib.sha256(profile.read_bytes()).hexdigest()
+
+          print(f"model={model}")
+          print(f"backend={backend}")
+          print(f"device={device}")
+          print(f"cache_key={cache_key}")
+          print(f"profile_sha={profile_sha}")
+          PY
+
+          cat "$RUNNER_TEMP/bookbench-asr.env" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SpeechScope model cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.SPEECHSCOPE_MODEL_HOME }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.asr.outputs.cache_key }}
+
+      - name: Verify or install ASR model
+        shell: bash
+        env:
+          MODEL: ${{ steps.asr.outputs.model }}
+        run: |
+          set -euo pipefail
+          if ! speechscope models verify "$MODEL"; then
+            speechscope models install "$MODEL" --force
+          fi
+          speechscope models verify "$MODEL"
+
+      - name: Force cold synthesis cache
+        run: rm -rf .bookbench/cache/voicerender
+
+      - name: BookBench doctor
+        run: bookbench doctor --engine "${{ inputs.engine }}"
+
+      - name: Run engine E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.engine }}"
+          bookbench run \
+            --engine "${{ inputs.engine }}" \
+            --run-id "$RUN_ID"
+
+      - name: Upload BookBench evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bookbench-${{ inputs.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .bookbench/runs/gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.engine }}/
+          if-no-files-found: warn
+          retention-days: 14

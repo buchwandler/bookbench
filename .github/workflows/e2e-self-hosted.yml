@@ -1,4 +1,4 @@
-name: Full E2E
+name: E2E · All Engines (optional)
 on:
   workflow_dispatch:
     inputs:

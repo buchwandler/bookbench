@@ -135,6 +135,23 @@ def test_speechscope_policy_serializes_enabled_thresholds(tmp_path, strict_wer, 
     else:
         assert policy["max_wer"] == strict_wer
 
+def test_run_speechscope_passes_configured_backend_device_and_model(tmp_path):
+    context = _speechscope_run_context(tmp_path)
+    config = Config(
+        speechscope=SpeechScopeConfig(
+            backend="whispercpp",
+            device="cpu",
+            model="whispercpp:tiny.en-q5_1",
+        )
+    )
+
+    checked, _data = Harness(config, dry_run=True)._run_speechscope(context)
+
+    assert checked.argv[checked.argv.index("--backend"):][:2] == ["--backend", "whispercpp"]
+    assert checked.argv[checked.argv.index("--device"):][:2] == ["--device", "cpu"]
+    assert checked.argv[checked.argv.index("--model"):][:2] == ["--model", "whispercpp:tiny.en-q5_1"]
+
+
 
 def test_speechscope_failure_message_names_failed_rules():
     from bookbench.runner import _speechscope_failure_message
@@ -543,7 +560,14 @@ def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch
     profile_path = tmp_path / "profiles" / "My Voice!.renderprofile.toml"
     _write_profile(profile_path)
     profile = inspect_profile(profile_path)
-    harness = Harness(_config(tmp_path, profile_path))
+    speechscope = SpeechScopeConfig(
+        backend="whispercpp",
+        device="cpu",
+        model="whispercpp:tiny.en-q5_1",
+        normalization="basic-v1",
+        reference_mode="renderplan",
+    )
+    harness = Harness(_config(tmp_path, profile_path, speechscope=speechscope))
     monkeypatch.setattr(
         harness,
         "_probe_speechscope_capabilities",
@@ -603,6 +627,15 @@ def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch
     assert run_data["selected_chapters"] == "all"
     assert run_data["dry_run"] is False
     assert run_data["speechscope_capabilities"]["supports_max_compound_wer"] is True
+    assert run_data["speechscope"] == {
+        "backend": "whispercpp",
+        "device": "cpu",
+        "model": "whispercpp:tiny.en-q5_1",
+        "normalization": "basic-v1",
+        "reference_mode": "renderplan",
+    }
+    summary_data = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary_data["speechscope"] == run_data["speechscope"]
     assert run_data["start_timestamp"] and run_data["end_timestamp"]
     assert profile_data["candidate_label"] == "voice-a-candidate"
     assert profile_data["original_path"] == str(profile_path.resolve())
@@ -734,6 +767,19 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
             "error": None,
         },
     )
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_backend",
+        lambda: {
+            "ok": True,
+            "backend": config.speechscope.backend,
+            "device": config.speechscope.device,
+            "model": config.speechscope.model,
+            "runtime": {},
+            "model_store": {},
+            "error": None,
+        },
+    )
 
     def fake_run(argv, **kwargs):
         args = [str(value) for value in argv]
@@ -800,6 +846,70 @@ def test_speechscope_capability_probe_uses_metric_listing(monkeypatch):
     assert capabilities["status"] == "supported"
     assert capabilities["supports_compound_wer"] is True
     assert capabilities["supports_max_compound_wer"] is True
+
+def test_speechscope_backend_probe_reports_configured_readiness(monkeypatch):
+    import subprocess
+
+    import bookbench.runner as runner_module
+
+    config = Config(
+        speechscope=SpeechScopeConfig(
+            backend="whispercpp",
+            device="cpu",
+            model="whispercpp:tiny.en-q5_1",
+        )
+    )
+    calls = []
+    payload = {"ok": True, "runtime": {"available": True}, "model_store": {"verified": True}}
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None)
+    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+    readiness = Harness(config)._probe_speechscope_backend()
+
+    assert calls == [[
+        "speechscope", "doctor", "--backend", "whispercpp", "--model", "whispercpp:tiny.en-q5_1",
+        "--device", "cpu", "--format", "json",
+    ]]
+    assert readiness["ok"] is True
+    assert readiness["status"] == "ready"
+    assert readiness["backend"] == "whispercpp"
+    assert readiness["device"] == "cpu"
+    assert readiness["model"] == "whispercpp:tiny.en-q5_1"
+    assert readiness["runtime"] == {"available": True}
+    assert readiness["model_store"] == {"verified": True}
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "expected_status", "expected_error"),
+    [
+        (0, '{"ok": false, "error": "model is not installed"}', "", "not_ready", "model is not installed"),
+        (1, '{"ok": false, "errors": ["invalid backend/model"]}', "", "not_ready", "invalid backend/model"),
+        (0, "not json", "", "probe_failed", "invalid SpeechScope readiness response"),
+    ],
+)
+def test_speechscope_backend_probe_fails_closed(monkeypatch, returncode, stdout, stderr, expected_status, expected_error):
+    import subprocess
+
+    import bookbench.runner as runner_module
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None)
+    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+    readiness = Harness(Config())._probe_speechscope_backend()
+
+    assert readiness["ok"] is False
+    assert readiness["status"] == expected_status
+    assert readiness["error"]
+    assert expected_error in readiness["error"]
+
 
 
 def test_run_rejects_unsupported_compound_gate_before_synthesis(tmp_path, monkeypatch):
@@ -1036,7 +1146,7 @@ def test_unknown_engine_selection_fails_before_run_directory_or_commands(tmp_pat
     assert not config.work_root.exists()
 
 
-def _stub_doctor_dependencies(monkeypatch, harness):
+def _stub_doctor_dependencies(monkeypatch, harness, *, backend_ok=True):
     import subprocess
 
     import bookbench.runner as runner_module
@@ -1047,6 +1157,20 @@ def _stub_doctor_dependencies(monkeypatch, harness):
         harness,
         "_probe_speechscope_capabilities",
         lambda: {"supports_max_compound_wer": True},
+    )
+    speech = harness.config.speechscope
+    monkeypatch.setattr(
+        harness,
+        "_probe_speechscope_backend",
+        lambda: {
+            "ok": backend_ok,
+            "backend": speech.backend,
+            "device": speech.device,
+            "model": speech.model,
+            "runtime": {},
+            "model_store": {},
+            "error": None if backend_ok else "model is not installed",
+        },
     )
     monkeypatch.setattr(harness, "_probe_engine_inventory", lambda: ([{"id": "piper"}], None))
 
@@ -1062,6 +1186,7 @@ def test_doctor_reports_ready_linguistics_for_selected_profiles(tmp_path, monkey
     diagnostics = harness.doctor(selection=ProfileSelection(engines=("piper",)))
 
     assert diagnostics["ok"] is True
+    assert diagnostics["speechscope_backend"]["ok"] is True
     assert diagnostics["selection"]["mode"] == "engine"
     assert diagnostics["selection"]["selected_profiles"] == ["piper"]
     assert diagnostics["engine_coverage"] == {
@@ -1080,6 +1205,17 @@ def test_doctor_reports_ready_linguistics_for_selected_profiles(tmp_path, monkey
         "error": None,
     }
 
+
+
+def test_doctor_fails_when_speechscope_backend_is_not_ready(tmp_path, monkeypatch):
+    harness = Harness(_selection_config(tmp_path))
+    _stub_doctor_dependencies(monkeypatch, harness, backend_ok=False)
+
+    diagnostics = harness.doctor(selection=ProfileSelection(engines=("piper",)))
+
+    assert diagnostics["ok"] is False
+    assert diagnostics["speechscope_backend"]["ok"] is False
+    assert diagnostics["speechscope_backend"]["error"] == "model is not installed"
 
 def test_doctor_fails_on_selected_profile_spacy_conflict_without_downloading_models(tmp_path, monkeypatch):
     config = _selection_config(

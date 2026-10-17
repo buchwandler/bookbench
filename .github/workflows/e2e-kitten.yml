@@ -1,0 +1,13 @@
+name: E2E · Kitten
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: kitten

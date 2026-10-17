@@ -39,15 +39,16 @@ spoken forms are intentionally identical.
 ## Fast start
 
 Requirements: Python 3.11+, FFmpeg, and the Buchwandler CLIs on `PATH`.
-SpeechScope Redux also needs its optional backend dependency/model when you run the
-real ASR gate. The selected VoiceRender engine/model assets must already be
-available according to their own package rules.
+The shared `bookbench.toml` pins SpeechScope to `whispercpp:tiny.en-q5_1` on CPU.
+Install the ASR model once, then verify its installed bytes:
 
 ```bash
 python -m pip install -e '.[dev]'
-bookbench doctor
+speechscope models install whispercpp:tiny.en-q5_1
+speechscope models verify whispercpp:tiny.en-q5_1
+bookbench doctor --engine piper
+bookbench run --engine piper
 pytest -q
-bookbench run
 ```
 
 The starter includes validated VoiceRender RenderProfiles for six engines. Refresh
@@ -119,11 +120,18 @@ thresholds intentionally requires strict token-boundary equality too.
 
 ## CI direction
 
-The included self-hosted workflow is intentionally simple. A useful next step is
-to have each component repository trigger this repo with a repository-dispatch
-payload containing the changed component/ref. The self-hosted runner can install
-that checkout plus the pinned versions of the other components, then run the same
-engine matrix and retain `.bookbench/runs/` as the evidence artifact.
+Six manually triggered workflows provide isolated E2E entry points: `E2E · Inflect`,
+`E2E · Kitten`, `E2E · Kokoro`, `E2E · Piper`, `E2E · Pocket`, and
+`E2E · Supertonic`. Each selects exactly one engine and calls the shared reusable
+self-hosted workflow. The existing full-matrix workflow remains an optional manual sweep.
+
+The SpeechScope model is selected only by `bookbench.toml`; CI does not override it, so
+changing the model is a reviewed repository configuration change. CI caches SpeechScope
+model weights under `.ci-cache/speechscope-models`, keyed by OS, architecture, canonical
+model ref, and the primary artifact digest. It verifies restored model bytes before use.
+The VoiceRender synthesis cache at `.bookbench/cache/voicerender` is deleted before every
+E2E run so the selected renderer must synthesize fresh output. Run evidence under
+`.bookbench/runs/` is uploaded for each workflow.
 
 ## Voice comparison / A-B tests
 
