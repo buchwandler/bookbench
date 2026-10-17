@@ -1,0 +1,19 @@
+# Regenerate requirements-e2e.lock for CPython 3.12 / x86_64 Linux with:
+# uv pip compile --python-version 3.12 --python-platform x86_64-unknown-linux-gnu \
+#   --generate-hashes --no-annotate -o requirements-e2e.lock requirements-e2e.in
+text2epub==0.1.4
+ssmdconvert==0.2.0
+utterplan[spacy]==0.6.3
+voicerender==0.2.2
+audiocompose[voicerender]==0.3.1
+audioexport==0.1.2
+speechscope==0.1.1
+inflectsynth[cpu]==0.1.1
+kittensynth[cpu]==0.1.5
+pykokoro[cpu]==0.10.5
+pipersynth[cpu]==0.2.5
+pocketsynth[cpu]==0.2.6
+supertonicsynth[cpu]==0.1.4
+setuptools==84.0.0
+setuptools-scm==9.2.2
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

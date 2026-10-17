@@ -1,5 +1,5 @@
 # Requires the SpeechScope implementation described in 01_speechscope_whispercpp_models.md.
-# Current Node-24 action majors require a sufficiently recent self-hosted Actions runner.
+# Run on GitHub-hosted Ubuntu 24.04 with the pinned CPU runtime below.
 name: E2E engine (reusable)
 
 on:
@@ -14,10 +14,11 @@ permissions:
 
 env:
   SPEECHSCOPE_MODEL_HOME: ${{ github.workspace }}/.ci-cache/speechscope-models
+  CUDA_VISIBLE_DEVICES: ""
 
 jobs:
   e2e:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     concurrency:
       group: bookbench-e2e-${{ inputs.engine }}
       cancel-in-progress: false
@@ -28,9 +29,17 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-e2e.lock
+
+      - name: Install locked E2E dependencies
+        run: python -m pip install --require-hashes -r requirements-e2e.lock
 
       - name: Install BookBench checkout
-        run: python -m pip install -e .
+        run: python -m pip install --no-deps --no-build-isolation -e .
+
+      - name: Bootstrap Ubuntu E2E runtime
+        run: scripts/bootstrap-e2e-runtime.sh
 
       - name: Resolve configured ASR model and cache fingerprint
         id: asr

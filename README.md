@@ -122,8 +122,24 @@ thresholds intentionally requires strict token-boundary equality too.
 
 Six manually triggered workflows provide isolated E2E entry points: `E2E · Inflect`,
 `E2E · Kitten`, `E2E · Kokoro`, `E2E · Piper`, `E2E · Pocket`, and
-`E2E · Supertonic`. Each selects exactly one engine and calls the shared reusable
-self-hosted workflow. The existing full-matrix workflow remains an optional manual sweep.
+`E2E · Supertonic`. Each selects exactly one engine and calls the shared workflow on
+GitHub-hosted `ubuntu-24.04`. The existing full-matrix workflow remains an optional manual
+sweep.
+
+The shared job uses CPython 3.12 with CUDA visibility disabled. `requirements-e2e.in`
+pins the BookWandler command-line tools and CPU extras for all six engine integrations;
+`requirements-e2e.lock` locks their transitive dependencies with SHA-256 hashes. The
+workflow installs this lock before installing BookBench. `scripts/bootstrap-e2e-runtime.sh`
+installs the Ubuntu system prerequisites (`build-essential`, CMake, Git, FFmpeg, and
+espeak-ng) and builds CPU `whisper.cpp` at commit
+`0c7be696371069e0baa2515ed7aa08d5a5473aa6`, exporting the binary path for SpeechScope.
+
+Regenerate the Python lock after changing a runtime pin with:
+
+```bash
+uv pip compile --python-version 3.12 --python-platform x86_64-unknown-linux-gnu \\
+  --generate-hashes --no-annotate -o requirements-e2e.lock requirements-e2e.in
+```
 
 The SpeechScope model is selected only by `bookbench.toml`; CI does not override it, so
 changing the model is a reviewed repository configuration change. CI caches SpeechScope
