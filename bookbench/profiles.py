@@ -16,6 +16,7 @@ class ProfileInfo:
     targets: tuple[tuple[str, str], ...] = ()
 
     required_token_fields: tuple[str, ...] = ()
+
     @property
     def variant_label(self) -> str:
         raw = self.label.lower()
@@ -59,9 +60,7 @@ def inspect_profile(path: str | Path) -> ProfileInfo:
         if not isinstance(token_fields, (list, tuple)) or any(
             not isinstance(field, str) or not field.strip() for field in token_fields
         ):
-            raise ValueError(
-                f"{path}: roles.{role_name}.requirements.token_fields must be a list of non-empty strings"
-            )
+            raise ValueError(f"{path}: roles.{role_name}.requirements.token_fields must be a list of non-empty strings")
         required_token_fields.update(token_fields)
     if not engines:
         raise ValueError(f"{path}: no roles.*.binding.renderer found")
@@ -112,7 +111,6 @@ class ProfileCase:
     def engines(self) -> tuple[str, ...]:
         return self.profile.engines
 
-
     @property
     def targets(self) -> tuple[tuple[str, str], ...]:
         return self.profile.targets
@@ -124,6 +122,7 @@ class ProfileCase:
 
 def required_token_fields(profiles: Iterable[ProfileInfo | ProfileCase]) -> tuple[str, ...]:
     return tuple(sorted({field for profile in profiles for field in profile.required_token_fields}))
+
 
 @dataclass(frozen=True, slots=True)
 class ProfileSelection:
@@ -164,9 +163,7 @@ def select_profiles(
     configured_profiles = {case.label for case in cases}
     missing_profiles = requested_profiles - configured_profiles
     if missing_profiles:
-        raise ValueError(
-            "Unknown profile selector(s): " + ", ".join(sorted(missing_profiles))
-        )
+        raise ValueError("Unknown profile selector(s): " + ", ".join(sorted(missing_profiles)))
     return [case for case in cases if case.label in requested_profiles]
 
 

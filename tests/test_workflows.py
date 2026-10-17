@@ -128,12 +128,12 @@ def test_hosted_e2e_lock_and_whisper_bootstrap_are_pinned():
         "pocket": "pocketsynth",
         "supertonic": "supertonicsynth",
     }
-    inflect_source = "https://github.com/buchwandler/inflectsynth/archive/a61b507ae2b7bd796dcda9ff42350ca9a174693a.tar.gz#sha256=2b40d1114413ad75956ad1d2df1a40ad8d8b7e4ecea7f421a997cafff71c5f8b"
+    inflect_requirement = "inflectsynth[cpu]==0.1.2"
     for engine, package in package_names.items():
         engine_input = (ROOT / "requirements" / "e2e" / "engines" / f"{engine}.in").read_text(encoding="utf-8")
         assert "-r ../base.in" in engine_input
         if engine == "inflect":
-            assert f"inflectsynth[cpu] @ {inflect_source}" in engine_input
+            assert inflect_requirement in engine_input
         else:
             assert package in engine_input
 
@@ -151,8 +151,8 @@ def test_hosted_e2e_lock_and_whisper_bootstrap_are_pinned():
             assert not (unrelated_packages & locked_names)
             assert "--hash=sha256:" in lock
             if engine == "inflect":
-                assert inflect_source in lock
-                assert "--hash=sha256:2b40d1114413ad75956ad1d2df1a40ad8d8b7e4ecea7f421a997cafff71c5f8b" in lock
+                assert "inflectsynth==0.1.2" in lock
+                assert "huggingface-hub==" in lock
 
     compiler = (ROOT / "scripts" / "ci" / "compile-e2e-locks.py").read_text(encoding="utf-8")
     assert '"3.12"' in compiler

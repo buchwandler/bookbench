@@ -54,7 +54,10 @@ def test_listening_report(tmp_path):
     assert "Strict WER" in text
     assert "CER" in text
     assert "Boundary variants" in text
-    assert '<td>0.0000</td><td>0.1053</td><td>0.0000</td><td>1 <a href="exports/voice-a.speechscope.json">details</a>' in text
+    assert (
+        '<td>0.0000</td><td>0.1053</td><td>0.0000</td><td>1 <a href="exports/voice-a.speechscope.json">details</a>'
+        in text
+    )
     assert "subjective voice-quality scores" in text
 
 

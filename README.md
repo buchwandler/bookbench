@@ -106,6 +106,7 @@ VoiceRender JSON is authoritative: BookBench calls `utterplan replan-book` only 
 A hard reject, mixed failure set, malformed response, or incomplete failed-item record fails closed at `voicerender` without replanning. A valid capacity replan is retried only within the configured `max_replans` budget; exhausted retries preserve the last VoiceRender diagnostic.
 
 Summaries and listening reports retain the renderer's error code/message, replan flag, preflight report, chapter, and RenderPlan ID so hard rejects are not obscured by a secondary UtterPlan failure.
+
 ## Exact vs practical ASR gates
 
 The smoke fixture uses `max_compound_wer = 0.0` and `max_cer = 0.0`. This is an exact
@@ -145,9 +146,7 @@ python scripts/ci/compile-e2e-locks.py
 ```
 
 The compiler targets CPython 3.12 for every supported runner and fails if any target cannot be
-resolved. InflectSynth is temporarily pinned to upstream commit `a61b507` because release
-`0.1.1` lacks the VoiceRender request-measurement API; the source archive is SHA-256 verified
-in every Inflect lock until a compatible release is published.
+The compiler targets CPython 3.12 for every supported runner and fails if any target cannot be resolved. InflectSynth is pinned to the v0.1.2 release, which supplies VoiceRender's request-measurement API and includes Hugging Face transport in the default dependency contract; all platform lockfiles carry hashes for the resolved release artifacts.
 
 ### Runtime setup and cache behavior
 
@@ -191,6 +190,7 @@ export, expected transcript, and SpeechScope JSON when those artifacts are insid
 The HTML report is generated even if some candidates fail and preserves configured profile
 order. Compound/strict WER and CER are acoustic transcript-validation measures, not perceptual voice-quality
 scores or a ranking. No real synthesis runs in unit tests.
+
 ## Command split
 
 - `bookbench run` executes every configured case with one shared source-preparation pipeline, or only the selected `--engine`/`--profile` cases.

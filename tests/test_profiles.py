@@ -21,7 +21,6 @@ def test_example_profile_identity_and_variant():
     assert info.variant == "piper--525856299523"
 
 
-
 def test_profile_required_token_fields_and_multi_role_union(tmp_path):
     root = Path(__file__).parents[1]
     assert inspect_profile(root / "profiles" / "piper.renderprofile.toml").required_token_fields == ()
@@ -60,6 +59,7 @@ def test_profile_rejects_malformed_token_fields(tmp_path, token_fields):
     with pytest.raises(ValueError, match="token_fields must be a list of non-empty strings"):
         inspect_profile(path)
 
+
 def test_coverage():
     root = Path(__file__).parents[1]
     info = inspect_profile(root / "profiles" / "piper.renderprofile.toml")
@@ -85,7 +85,6 @@ def test_variant_label_matches_utterplan_normalization(tmp_path):
         info = inspect_profile(path)
         assert info.variant_label == expected_label
         assert info.variant == f"{expected_label}--1234567890ab"
-
 
 
 def _case(label: str, *engines: str) -> ProfileCase:
@@ -115,9 +114,7 @@ def test_select_profiles_by_one_engine():
 
 def test_select_profiles_by_multiple_engines_preserves_case_order():
     cases = _selection_cases()
-    selected = select_profiles(
-        cases, ProfileSelection(engines=("kitten", "piper"))
-    )
+    selected = select_profiles(cases, ProfileSelection(engines=("kitten", "piper")))
     assert [case.label for case in selected] == [
         "piper-amy",
         "piper-lessac",

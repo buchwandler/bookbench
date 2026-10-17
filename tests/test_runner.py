@@ -30,6 +30,7 @@ def _write_profile(
     path.write_bytes(content_bytes)
     return content_bytes
 
+
 def _config(
     tmp_path: Path,
     profile_path: Path,
@@ -63,7 +64,6 @@ def _config(
     )
 
 
-
 def _selection_config(
     tmp_path: Path,
     *,
@@ -95,7 +95,6 @@ def _selection_config(
         voices=tuple(voices),
         utterplan=utterplan or UtterPlanConfig(),
     )
-
 
 
 def _speechscope_run_context(tmp_path: Path) -> ProfileRunContext:
@@ -135,6 +134,7 @@ def test_speechscope_policy_serializes_enabled_thresholds(tmp_path, strict_wer, 
     else:
         assert policy["max_wer"] == strict_wer
 
+
 def test_run_speechscope_passes_configured_backend_device_and_model(tmp_path):
     context = _speechscope_run_context(tmp_path)
     config = Config(
@@ -147,10 +147,9 @@ def test_run_speechscope_passes_configured_backend_device_and_model(tmp_path):
 
     checked, _data = Harness(config, dry_run=True)._run_speechscope(context)
 
-    assert checked.argv[checked.argv.index("--backend"):][:2] == ["--backend", "whispercpp"]
-    assert checked.argv[checked.argv.index("--device"):][:2] == ["--device", "cpu"]
-    assert checked.argv[checked.argv.index("--model"):][:2] == ["--model", "whispercpp:tiny.en-q5_1"]
-
+    assert checked.argv[checked.argv.index("--backend") :][:2] == ["--backend", "whispercpp"]
+    assert checked.argv[checked.argv.index("--device") :][:2] == ["--device", "cpu"]
+    assert checked.argv[checked.argv.index("--model") :][:2] == ["--model", "whispercpp:tiny.en-q5_1"]
 
 
 def test_speechscope_failure_message_names_failed_rules():
@@ -163,7 +162,6 @@ def test_speechscope_failure_message_names_failed_rules():
     assert "max_compound_wer" in message
     assert "observed=0.0526" in message
     assert "expected=0.0" in message
-
 
 
 def _failure_item(
@@ -230,7 +228,9 @@ def _run_voice_render_scenario(
         if args[:2] == ["speechscope", "analyze"]:
             report_path = Path(args[args.index("--json") + 1])
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(json.dumps(speechscope_payload or {"metrics": {}, "evaluation": {"status": "pass"}}), encoding="utf-8")
+            report_path.write_text(
+                json.dumps(speechscope_payload or {"metrics": {}, "evaluation": {"status": "pass"}}), encoding="utf-8"
+            )
             result.returncode = speechscope_returncode
         harness.commands.append(result)
         commands.append(result)
@@ -239,7 +239,6 @@ def _run_voice_render_scenario(
     monkeypatch.setattr(harness, "_run", fake_run)
     run_dir, results = harness.run(run_id="strict-voice-render")
     return harness, run_dir, results, commands
-
 
 
 def test_piper_boundary_variant_passes_with_nonzero_strict_wer(tmp_path, monkeypatch):
@@ -259,9 +258,7 @@ def test_piper_boundary_variant_passes_with_nonzero_strict_wer(tmp_path, monkeyp
             ],
         },
     }
-    _, run_dir, results, _ = _run_voice_render_scenario(
-        tmp_path, monkeypatch, [], speechscope_payload=payload
-    )
+    _, run_dir, results, _ = _run_voice_render_scenario(tmp_path, monkeypatch, [], speechscope_payload=payload)
 
     result = results[0]
     assert result.status == "pass"
@@ -278,7 +275,6 @@ def test_piper_boundary_variant_passes_with_nonzero_strict_wer(tmp_path, monkeyp
     assert summary["results"][0]["compound_wer"] == 0.0
     assert summary["results"][0]["content_match"] is True
     assert summary["results"][0]["word_boundary_match_count"] == 1
-
 
 
 def test_true_lexical_error_fails_closed_with_rule_details(tmp_path, monkeypatch):
@@ -347,8 +343,10 @@ def test_explicit_strict_wer_still_fails_boundary_variant(tmp_path, monkeypatch)
     assert policy["max_wer"] == 0.0
     assert policy["max_cer"] == 0.0
 
+
 def _render_failure(items):
     return 1, json.dumps({"items": items}), ""
+
 
 def test_stage_profile_is_byte_exact_inside_renderplan_and_idempotent(tmp_path):
     profile_path = tmp_path / "profiles" / "My Voice!.renderprofile.toml"
@@ -407,7 +405,15 @@ def test_external_renderprofile_is_staged_before_utterplan(tmp_path, monkeypatch
             render_attempts += 1
             if render_attempts == 1:
                 result.returncode = 1
-                result.stdout = json.dumps({"items": [_failure_item(error_code="preflight.replan", error_message="capacity overflow", replan_required=True)]})
+                result.stdout = json.dumps(
+                    {
+                        "items": [
+                            _failure_item(
+                                error_code="preflight.replan", error_message="capacity overflow", replan_required=True
+                            )
+                        ]
+                    }
+                )
         return result
 
     monkeypatch.setattr(harness, "_run", run_with_replan)
@@ -435,9 +441,6 @@ def test_external_renderprofile_is_staged_before_utterplan(tmp_path, monkeypatch
     assert {args[args.index("--variant") + 1] for args in downstream} == {profile.variant}
 
 
-
-
-
 def test_hard_voicerender_reject_is_not_replanned_and_preserves_diagnostics(tmp_path, monkeypatch):
     item = _failure_item(error_message="capacity unknown; no safe replan exists")
     _, run_dir, results, commands = _run_voice_render_scenario(tmp_path, monkeypatch, [_render_failure([item])])
@@ -463,9 +466,7 @@ def test_hard_voicerender_reject_is_not_replanned_and_preserves_diagnostics(tmp_
 
 
 def test_valid_voicerender_replan_retries_once_then_succeeds(tmp_path, monkeypatch):
-    item = _failure_item(
-        error_code="preflight.replan", error_message="capacity overflow", replan_required=True
-    )
+    item = _failure_item(error_code="preflight.replan", error_message="capacity overflow", replan_required=True)
     _, _, results, commands = _run_voice_render_scenario(
         tmp_path, monkeypatch, [_render_failure([item])], max_replans=1
     )
@@ -488,9 +489,7 @@ def test_mixed_voicerender_failure_set_is_not_replanned(tmp_path, monkeypatch):
         error_message="capacity unknown",
         replan_required=False,
     )
-    _, _, results, commands = _run_voice_render_scenario(
-        tmp_path, monkeypatch, [_render_failure([replan, reject])]
-    )
+    _, _, results, commands = _run_voice_render_scenario(tmp_path, monkeypatch, [_render_failure([replan, reject])])
 
     assert results[0].failed_stage == "voicerender"
     assert "chapter-replan" in results[0].error
@@ -546,16 +545,14 @@ def test_replan_budget_exhaustion_preserves_last_voicerender_diagnostic(tmp_path
 
 
 def test_replan_command_failure_is_attributed_to_replan(tmp_path, monkeypatch):
-    item = _failure_item(
-        error_code="preflight.replan", error_message="capacity overflow", replan_required=True
-    )
-    _, _, results, _ = _run_voice_render_scenario(
-        tmp_path, monkeypatch, [_render_failure([item])], replan_returncode=1
-    )
+    item = _failure_item(error_code="preflight.replan", error_message="capacity overflow", replan_required=True)
+    _, _, results, _ = _run_voice_render_scenario(tmp_path, monkeypatch, [_render_failure([item])], replan_returncode=1)
 
     assert results[0].failed_stage == "replan"
     assert "capacity overflow" in results[0].error
     assert "replan rejected" in results[0].error
+
+
 def test_renderplan_expected_text_lookup_uses_full_variant(tmp_path, monkeypatch):
     profile_path = tmp_path / "profiles" / "My Voice!.renderprofile.toml"
     _write_profile(profile_path)
@@ -825,7 +822,6 @@ def test_doctor_reports_profile_validation_duplicates_source_and_workspace(tmp_p
     assert all(command[:3] == ["voicerender", "profile", "validate"] for command in validation_commands)
 
 
-
 def test_speechscope_capability_probe_uses_metric_listing(monkeypatch):
     import subprocess
 
@@ -837,7 +833,9 @@ def test_speechscope_capability_probe_uses_metric_listing(monkeypatch):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, json.dumps(["wer", "compound_wer", "cer"]), "")
 
-    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None)
+    monkeypatch.setattr(
+        runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None
+    )
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
 
     capabilities = Harness(Config())._probe_speechscope_capabilities()
@@ -846,6 +844,7 @@ def test_speechscope_capability_probe_uses_metric_listing(monkeypatch):
     assert capabilities["status"] == "supported"
     assert capabilities["supports_compound_wer"] is True
     assert capabilities["supports_max_compound_wer"] is True
+
 
 def test_speechscope_backend_probe_reports_configured_readiness(monkeypatch):
     import subprocess
@@ -866,15 +865,27 @@ def test_speechscope_backend_probe_reports_configured_readiness(monkeypatch):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None)
+    monkeypatch.setattr(
+        runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None
+    )
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
 
     readiness = Harness(config)._probe_speechscope_backend()
 
-    assert calls == [[
-        "speechscope", "doctor", "--backend", "whispercpp", "--model", "whispercpp:tiny.en-q5_1",
-        "--device", "cpu", "--format", "json",
-    ]]
+    assert calls == [
+        [
+            "speechscope",
+            "doctor",
+            "--backend",
+            "whispercpp",
+            "--model",
+            "whispercpp:tiny.en-q5_1",
+            "--device",
+            "cpu",
+            "--format",
+            "json",
+        ]
+    ]
     assert readiness["ok"] is True
     assert readiness["status"] == "ready"
     assert readiness["backend"] == "whispercpp"
@@ -892,7 +903,9 @@ def test_speechscope_backend_probe_reports_configured_readiness(monkeypatch):
         (0, "not json", "", "probe_failed", "invalid SpeechScope readiness response"),
     ],
 )
-def test_speechscope_backend_probe_fails_closed(monkeypatch, returncode, stdout, stderr, expected_status, expected_error):
+def test_speechscope_backend_probe_fails_closed(
+    monkeypatch, returncode, stdout, stderr, expected_status, expected_error
+):
     import subprocess
 
     import bookbench.runner as runner_module
@@ -900,7 +913,9 @@ def test_speechscope_backend_probe_fails_closed(monkeypatch, returncode, stdout,
     def fake_run(argv, **kwargs):
         return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
 
-    monkeypatch.setattr(runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None)
+    monkeypatch.setattr(
+        runner_module.shutil, "which", lambda tool: "/tools/speechscope" if tool == "speechscope" else None
+    )
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
 
     readiness = Harness(Config())._probe_speechscope_backend()
@@ -909,7 +924,6 @@ def test_speechscope_backend_probe_fails_closed(monkeypatch, returncode, stdout,
     assert readiness["status"] == expected_status
     assert readiness["error"]
     assert expected_error in readiness["error"]
-
 
 
 def test_run_rejects_unsupported_compound_gate_before_synthesis(tmp_path, monkeypatch):
@@ -936,7 +950,6 @@ def test_run_rejects_unsupported_compound_gate_before_synthesis(tmp_path, monkey
     run_data = json.loads((harness.run_dir / "run.json").read_text(encoding="utf-8"))
     assert run_data["failed_stage"] == "speechscope_capability"
     assert "max_compound_wer" in run_data["error"]
-
 
 
 def test_full_matrix_still_requires_every_configured_engine_before_preparation(tmp_path):
@@ -975,9 +988,7 @@ def test_selected_run_ignores_unselected_required_engines_and_records_provenance
     }
     profile_data = json.loads((run_dir / "profiles.json").read_text(encoding="utf-8"))
     assert [profile["candidate_label"] for profile in profile_data] == ["piper"]
-    assert profile_data[0]["targets"] == [
-        {"engine_id": "piper", "target_id": "piper-target"}
-    ]
+    assert profile_data[0]["targets"] == [{"engine_id": "piper", "target_id": "piper-target"}]
     engine_data = json.loads((run_dir / "engines.json").read_text(encoding="utf-8"))
     assert engine_data["selected_targets"] == [
         {"candidate_label": "piper", "engine_id": "piper", "target_id": "piper-target"}
@@ -988,7 +999,9 @@ def test_selected_run_ignores_unselected_required_engines_and_records_provenance
     assert "Selection: engine=piper" in report
     assert "Profiles: piper; engines: piper" in report
 
-    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    compile_args = next(
+        command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"]
+    )
     export_args = next(command.argv for command in harness.commands if command.argv[:2] == ["ssmdconvert", "txt"])
     assert compile_args[compile_args.index("--spacy") + 1] == "off"
     assert export_args[export_args.index("--spacy") + 1] == "off"
@@ -1014,7 +1027,9 @@ def test_kokoro_selection_uses_required_spacy_and_records_provenance(tmp_path):
     run_dir, results = harness.run(run_id="selected-kokoro")
 
     assert [result.profile for result in results] == ["kokoro"]
-    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    compile_args = next(
+        command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"]
+    )
     export_args = next(command.argv for command in harness.commands if command.argv[:2] == ["ssmdconvert", "txt"])
     assert compile_args[compile_args.index("--spacy") + 1] == "sm"
     assert export_args[export_args.index("--spacy") + 1] == "off"
@@ -1027,7 +1042,6 @@ def test_kokoro_selection_uses_required_spacy_and_records_provenance(tmp_path):
         "status": "ready",
         "error": None,
     }
-
 
 
 def test_run_json_captures_actual_utterplan_provider_metadata(tmp_path, monkeypatch):
@@ -1080,7 +1094,9 @@ def test_configured_spacy_tier_is_used_for_rich_profile(tmp_path, policy):
     harness = Harness(config, dry_run=True)
     harness.run(run_id=f"kokoro-{policy}")
 
-    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    compile_args = next(
+        command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"]
+    )
     assert compile_args[compile_args.index("--spacy") + 1] == policy
 
 
@@ -1096,7 +1112,9 @@ def test_full_six_profile_matrix_uses_union_of_selected_requirements(tmp_path):
     _run_dir, results = harness.run(run_id="full-six-profile-matrix")
 
     assert len(results) == 6
-    compile_args = next(command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"])
+    compile_args = next(
+        command.argv for command in harness.commands if command.argv[:2] == ["utterplan", "compile-book"]
+    )
     assert compile_args[compile_args.index("--spacy") + 1] == "sm"
 
 
@@ -1206,7 +1224,6 @@ def test_doctor_reports_ready_linguistics_for_selected_profiles(tmp_path, monkey
     }
 
 
-
 def test_doctor_fails_when_speechscope_backend_is_not_ready(tmp_path, monkeypatch):
     harness = Harness(_selection_config(tmp_path))
     _stub_doctor_dependencies(monkeypatch, harness, backend_ok=False)
@@ -1216,6 +1233,7 @@ def test_doctor_fails_when_speechscope_backend_is_not_ready(tmp_path, monkeypatc
     assert diagnostics["ok"] is False
     assert diagnostics["speechscope_backend"]["ok"] is False
     assert diagnostics["speechscope_backend"]["error"] == "model is not installed"
+
 
 def test_doctor_fails_on_selected_profile_spacy_conflict_without_downloading_models(tmp_path, monkeypatch):
     config = _selection_config(

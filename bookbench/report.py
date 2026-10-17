@@ -72,9 +72,7 @@ def build_listening_report(
     if selection is not None:
         mode = selection["mode"]
         requested = selection["requested"]
-        selection_label = (
-            "all configured profiles" if mode == "all" else f"{mode}={', '.join(requested)}"
-        )
+        selection_label = "all configured profiles" if mode == "all" else f"{mode}={', '.join(requested)}"
         profile_labels = ", ".join(selection["selected_profiles"]) or "none"
         engine_labels = ", ".join(selection["selected_engines"]) or "none"
         selection_html = (

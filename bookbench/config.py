@@ -6,6 +6,7 @@ from pathlib import Path
 
 UTTERPLAN_SPACY_POLICIES = frozenset({"auto", "off", "sm", "md", "lg", "trf"})
 
+
 @dataclass(frozen=True, slots=True)
 class SpeechScopeConfig:
     backend: str = "redux"

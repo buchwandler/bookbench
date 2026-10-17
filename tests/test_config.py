@@ -18,13 +18,11 @@ def test_load_example_config():
 
     assert cfg.utterplan.spacy == "auto"
 
+
 def test_load_speechscope_whispercpp_configuration_exactly(tmp_path):
     config_path = tmp_path / "bookbench.toml"
     config_path.write_text(
-        "[speechscope]\n"
-        'backend = "whispercpp"\n'
-        'device = "cpu"\n'
-        'model = "whispercpp:tiny.en-q5_1"\n',
+        '[speechscope]\nbackend = "whispercpp"\ndevice = "cpu"\nmodel = "whispercpp:tiny.en-q5_1"\n',
         encoding="utf-8",
     )
 
@@ -33,7 +31,6 @@ def test_load_speechscope_whispercpp_configuration_exactly(tmp_path):
         device="cpu",
         model="whispercpp:tiny.en-q5_1",
     )
-
 
 
 @pytest.mark.parametrize("policy", ("auto", "off", "sm", "md", "lg", "trf"))
@@ -51,6 +48,7 @@ def test_load_config_rejects_unknown_utterplan_spacy_policy(tmp_path, policy):
 
     with pytest.raises(ValueError, match="utterplan.spacy must be one of"):
         load_config(config_path)
+
 
 def _load_config_with_speechscope(tmp_path: Path, speechscope: str):
     config_path = tmp_path / "bookbench.toml"

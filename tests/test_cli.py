@@ -8,27 +8,21 @@ from bookbench.profiles import ProfileSelection
 
 
 def test_run_parses_repeatable_engine_selectors():
-    args = cli._parser().parse_args(
-        ["run", "--engine", "piper", "--engine", "kitten"]
-    )
+    args = cli._parser().parse_args(["run", "--engine", "piper", "--engine", "kitten"])
     assert args.engine == ["piper", "kitten"]
     assert args.profile == []
 
 
 def test_run_and_doctor_parse_repeatable_profile_selectors():
     for command in ("run", "doctor"):
-        args = cli._parser().parse_args(
-            [command, "--profile", "piper", "--profile", "piper-amy"]
-        )
+        args = cli._parser().parse_args([command, "--profile", "piper", "--profile", "piper-amy"])
         assert args.profile == ["piper", "piper-amy"]
         assert args.engine == []
 
 
 def test_engine_and_profile_selectors_are_mutually_exclusive():
     with pytest.raises(SystemExit):
-        cli._parser().parse_args(
-            ["run", "--engine", "piper", "--profile", "piper"]
-        )
+        cli._parser().parse_args(["run", "--engine", "piper", "--profile", "piper"])
 
 
 @pytest.mark.parametrize("command", ["run", "doctor"])
@@ -73,9 +67,7 @@ def test_main_deduplicates_and_passes_run_selection(monkeypatch, capsys):
     monkeypatch.setattr(cli, "load_config", lambda _path: config)
     monkeypatch.setattr(cli, "Harness", FakeHarness)
 
-    assert cli.main(
-        ["run", "--engine", "piper", "--engine", "piper", "--engine", "kitten"]
-    ) == 0
+    assert cli.main(["run", "--engine", "piper", "--engine", "piper", "--engine", "kitten"]) == 0
     assert calls == {
         "run_id": None,
         "selection": ProfileSelection(engines=("piper", "kitten")),

@@ -63,14 +63,11 @@ class PipelineError(RuntimeError):
     pass
 
 
-
 def _utterplan_linguistics(profiles: list[ProfileCase], configured_spacy: str) -> dict[str, Any]:
     fields = required_token_fields(profiles)
     requires_spacy = bool(RICH_LINGUISTIC_FIELDS.intersection(fields))
     selected_profiles = [
-        profile.label
-        for profile in profiles
-        if RICH_LINGUISTIC_FIELDS.intersection(profile.required_token_fields)
+        profile.label for profile in profiles if RICH_LINGUISTIC_FIELDS.intersection(profile.required_token_fields)
     ]
     error = None
     if configured_spacy == "auto":
@@ -95,7 +92,6 @@ def _utterplan_linguistics(profiles: list[ProfileCase], configured_spacy: str) -
         "status": "error" if error else "ready",
         "error": error,
     }
-
 
 
 def _utterplan_plan_provenance(book: Path) -> list[dict[str, Any]]:
@@ -159,7 +155,6 @@ class CommandResult:
     stderr: str
 
 
-
 def _parse_voicerender_failure(result: CommandResult) -> tuple[dict[str, Any] | None, str | None]:
     raw = result.stdout.strip()
     if not raw:
@@ -195,8 +190,10 @@ def _parse_voicerender_failure(result: CommandResult) -> tuple[dict[str, Any] | 
             return payload, f"failed items[{index}].error_message must be a string"
         if not isinstance(item["replan_required"], bool):
             return payload, f"failed items[{index}].replan_required must be a boolean"
-        if "preflight_report" in item and item["preflight_report"] is not None and not isinstance(
-            item["preflight_report"], str
+        if (
+            "preflight_report" in item
+            and item["preflight_report"] is not None
+            and not isinstance(item["preflight_report"], str)
         ):
             return payload, f"failed items[{index}].preflight_report must be a string or null"
     return payload, None
@@ -375,7 +372,6 @@ class Harness:
                 out[tool] = "probe_failed(exit=0): no version output"
         return out
 
-
     def _probe_speechscope_capabilities(self) -> dict[str, Any]:
         command = ["speechscope", "metrics", "list", "--format", "json"]
         if shutil.which("speechscope") is None:
@@ -553,14 +549,9 @@ class Harness:
         if self.config.voices:
             return [(voice.name, voice.profile) for voice in self.config.voices]
         suffix = ".renderprofile.toml"
-        return [
-            (path.name[: -len(suffix)], path)
-            for path in sorted(self.config.profiles_dir.glob(f"*{suffix}"))
-        ]
+        return [(path.name[: -len(suffix)], path) for path in sorted(self.config.profiles_dir.glob(f"*{suffix}"))]
 
-    def _selected_candidate_profiles(
-        self, selection: ProfileSelection | None
-    ) -> list[tuple[str, Path]]:
+    def _selected_candidate_profiles(self, selection: ProfileSelection | None) -> list[tuple[str, Path]]:
         candidates = self._candidate_profiles()
         if selection is None or not selection.active:
             return candidates
@@ -582,18 +573,11 @@ class Harness:
             valid_cases.append(ProfileCase(label, profile))
         selected = select_profiles(valid_cases, selection)
         selected_keys = {(case.label, case.path.resolve()) for case in selected}
-        return [
-            (label, path)
-            for label, path in candidates
-            if (label, path.resolve()) in selected_keys
-        ]
+        return [(label, path) for label, path in candidates if (label, path.resolve()) in selected_keys]
 
-    def _profiles(
-        self, selection: ProfileSelection | None = None
-    ) -> list[ProfileCase]:
+    def _profiles(self, selection: ProfileSelection | None = None) -> list[ProfileCase]:
         return [
-            ProfileCase(label, inspect_profile(path))
-            for label, path in self._selected_candidate_profiles(selection)
+            ProfileCase(label, inspect_profile(path)) for label, path in self._selected_candidate_profiles(selection)
         ]
 
     def _selection_provenance(
@@ -611,9 +595,7 @@ class Harness:
             "requested": requested,
             "selected_profiles": profile_labels or [profile.label for profile in profiles],
             "selected_variants": [profile.variant for profile in profiles],
-            "selected_engines": sorted(
-                {engine for profile in profiles for engine in profile.engines}
-            ),
+            "selected_engines": sorted({engine for profile in profiles for engine in profile.engines}),
             "full_matrix": not selected.active,
         }
 
@@ -632,7 +614,6 @@ class Harness:
             }
             for tool in TOOLS
         }
-
 
         profiles = []
         valid_profiles: list[ProfileCase] = []
@@ -723,9 +704,7 @@ class Harness:
             work_root["writable"] = True
 
         selected = selection or ProfileSelection()
-        required_engines = (
-            self.config.required_engines if not selected.active else selected.engines
-        )
+        required_engines = self.config.required_engines if not selected.active else selected.engines
         missing_engines = set(required_engines) - found_engines
         engine_coverage = {
             "found": sorted(found_engines),
@@ -741,8 +720,7 @@ class Harness:
             for item in tools.values()
         )
         speechscope_capability_pass = (
-            self.config.speechscope.max_compound_wer is None
-            or speechscope_capabilities["supports_max_compound_wer"]
+            self.config.speechscope.max_compound_wer is None or speechscope_capabilities["supports_max_compound_wer"]
         )
         return {
             "ok": (
@@ -860,6 +838,7 @@ class Harness:
                 "VoiceRender requested a capacity replan, but UtterPlan replan-book failed.\n"
                 f"VoiceRender: {_voicerender_failure_message(rendered)}\nreplan: {replan_detail}"
             )
+
     def _compose(self, run: RunContext, context: ProfileRunContext) -> None:
         self._current_stage = "compose"
         self._run(
@@ -1130,10 +1109,7 @@ class Harness:
                     "variant": profile.variant,
                     "engines": list(profile.engines),
                     "staged_path": str(staged),
-                    "targets": [
-                        {"engine_id": engine, "target_id": target_id}
-                        for engine, target_id in profile.targets
-                    ],
+                    "targets": [{"engine_id": engine, "target_id": target_id} for engine, target_id in profile.targets],
                     "staged_sha256": None,
                 }
             )
@@ -1152,8 +1128,7 @@ class Harness:
             if not speechscope_capabilities["supports_max_compound_wer"]:
                 detail = speechscope_capabilities.get("error") or "compound_wer capability is unavailable"
                 raise PipelineError(
-                    "Configured SpeechScope threshold max_compound_wer requires compound_wer support; "
-                    f"{detail}"
+                    f"Configured SpeechScope threshold max_compound_wer requires compound_wer support; {detail}"
                 )
         self._run_metadata["speechscope_capabilities"] = speechscope_capabilities
         self._write_provenance()
@@ -1172,9 +1147,7 @@ class Harness:
         (self.run_dir / "versions.json").write_text(json.dumps(versions, indent=2) + "\n", encoding="utf-8")
 
         engine_provenance = self._engine_provenance(profiles)
-        (self.run_dir / "engines.json").write_text(
-            json.dumps(engine_provenance, indent=2) + "\n", encoding="utf-8"
-        )
+        (self.run_dir / "engines.json").write_text(json.dumps(engine_provenance, indent=2) + "\n", encoding="utf-8")
         self._current_stage = "text2epub"
         self._run(
             [
@@ -1209,7 +1182,9 @@ class Harness:
         self._current_stage = "ssmdconvert"
         self._run(["ssmdconvert", "txt", book, "-o", self.run_dir / "prepared.txt", "--spacy", "off"])
         self._current_stage = "renderplan"
-        self._run(["utterplan", "compile-book", book, "--spacy", utterplan_linguistics["spacy_policy"], *self._chapter_args()])
+        self._run(
+            ["utterplan", "compile-book", book, "--spacy", utterplan_linguistics["spacy_policy"], *self._chapter_args()]
+        )
 
         plan_provenance = _utterplan_plan_provenance(book)
         if plan_provenance:
