@@ -1,0 +1,33 @@
+name: E2E · All Engines (hosted)
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inflect:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: inflect
+  kitten:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: kitten
+  kokoro:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: kokoro
+  piper:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: piper
+  pocket:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: pocket
+  supertonic:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: supertonic

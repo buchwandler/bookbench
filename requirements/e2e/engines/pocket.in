@@ -1,0 +1,2 @@
+-r ../base.in
+pocketsynth[cpu]==0.2.6

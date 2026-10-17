@@ -18,6 +18,8 @@ include = [
   "**/*.yml",
   "**/*.ssmd",
   "**/*.typed",
+  "**/*.in",
+  "**/*.sh",
   "LICENSE",
 ]
 split_max_chars = 0

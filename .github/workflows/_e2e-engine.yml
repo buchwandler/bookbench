@@ -1,5 +1,5 @@
 # Requires the SpeechScope implementation described in 01_speechscope_whispercpp_models.md.
-# Run on GitHub-hosted Ubuntu 24.04 with the pinned CPU runtime below.
+# Run on GitHub-hosted Ubuntu, Windows, and macOS runners.
 name: E2E engine (reusable)
 
 on:
@@ -11,126 +11,167 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   SPEECHSCOPE_MODEL_HOME: ${{ github.workspace }}/.ci-cache/speechscope-models
+  SPEECHSCOPE_WHISPERCPP_CACHE: ${{ github.workspace }}/.ci-cache/whispercpp
   CUDA_VISIBLE_DEVICES: ""
 
 jobs:
   e2e:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: windows-2025
+            platform: windows-x64
+          - os: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
     concurrency:
-      group: bookbench-e2e-${{ inputs.engine }}
+      group: bookbench-e2e-${{ inputs.engine }}-${{ matrix.platform }}
       cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
+        id: setup-python
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-e2e.lock
+          cache-dependency-path: requirements/e2e/locks/${{ matrix.platform }}/${{ inputs.engine }}.lock
 
       - name: Install locked E2E dependencies
-        run: python -m pip install --require-hashes -r requirements-e2e.lock
+        id: install-deps
+        run: python -m pip install --require-hashes -r "requirements/e2e/locks/${{ matrix.platform }}/${{ inputs.engine }}.lock"
 
       - name: Install BookBench checkout
+        id: install-bookbench
         run: python -m pip install --no-deps --no-build-isolation -e .
 
-      - name: Bootstrap Ubuntu E2E runtime
-        run: scripts/bootstrap-e2e-runtime.sh
+      - name: Cache pinned whisper.cpp runtime
+        id: runtime-cache
+        uses: actions/cache@v6
+        with:
+          path: .ci-cache/whispercpp
+          key: whispercpp-cpu-v1-${{ runner.os }}-${{ runner.arch }}-0c7be696371069e0baa2515ed7aa08d5a5473aa6
+
+      - name: Bootstrap Linux whisper.cpp runtime
+        id: bootstrap-linux
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/bootstrap-e2e-linux.sh
+
+      - name: Bootstrap macOS whisper.cpp runtime
+        id: bootstrap-macos
+        if: runner.os == 'macOS'
+        run: bash scripts/ci/bootstrap-e2e-macos.sh
+
+      - name: Bootstrap Windows whisper.cpp runtime
+        id: bootstrap-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/bootstrap-e2e-windows.ps1
 
       - name: Resolve configured ASR model and cache fingerprint
         id: asr
-        shell: bash
-        env:
-          ENGINE: ${{ inputs.engine }}
-        run: |
-          set -euo pipefail
-
-          python - <<'PY' > "$RUNNER_TEMP/bookbench-asr.env"
-          import hashlib
-          import json
-          import os
-          import subprocess
-          import tomllib
-          from pathlib import Path
-
-          data = tomllib.loads(Path("bookbench.toml").read_text(encoding="utf-8"))
-          speech = data["speechscope"]
-          model = speech["model"]
-          backend = speech["backend"]
-          device = speech["device"]
-
-          if backend != "whispercpp":
-              raise SystemExit(f"CI expects speechscope.backend=whispercpp, got {backend!r}")
-          if not model.startswith("whispercpp:"):
-              raise SystemExit(f"CI expects a canonical whispercpp model ref, got {model!r}")
-
-          raw = subprocess.check_output(
-              ["speechscope", "models", "show", model, "--format", "json"],
-              text=True,
-          )
-          record = json.loads(raw)
-          primary = [a for a in record["artifacts"] if a.get("primary")]
-          if len(primary) != 1:
-              raise SystemExit("catalog record must contain exactly one primary artifact")
-          digest = primary[0]["sha256"]
-          slug = model.replace(":", "-").replace("/", "-")
-          cache_key = f"speechscope-{os.uname().machine}-{slug}-{digest}"
-
-          profile = Path("profiles") / f"{os.environ['ENGINE']}.renderprofile.toml"
-          if not profile.is_file():
-              raise SystemExit(f"missing engine profile: {profile}")
-          profile_sha = hashlib.sha256(profile.read_bytes()).hexdigest()
-
-          print(f"model={model}")
-          print(f"backend={backend}")
-          print(f"device={device}")
-          print(f"cache_key={cache_key}")
-          print(f"profile_sha={profile_sha}")
-          PY
-
-          cat "$RUNNER_TEMP/bookbench-asr.env" >> "$GITHUB_OUTPUT"
+        run: python scripts/ci/resolve_e2e_context.py --engine "${{ inputs.engine }}"
 
       - name: Restore SpeechScope model cache
+        id: model-cache
         uses: actions/cache@v6
         with:
           path: ${{ env.SPEECHSCOPE_MODEL_HOME }}
           key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.asr.outputs.cache_key }}
 
       - name: Verify or install ASR model
-        shell: bash
-        env:
-          MODEL: ${{ steps.asr.outputs.model }}
-        run: |
-          set -euo pipefail
-          if ! speechscope models verify "$MODEL"; then
-            speechscope models install "$MODEL" --force
-          fi
-          speechscope models verify "$MODEL"
+        id: verify-model
+        run: python scripts/ci/ensure_speechscope_model.py --model "${{ steps.asr.outputs.model }}"
 
       - name: Force cold synthesis cache
-        run: rm -rf .bookbench/cache/voicerender
+        id: cold-cache
+        run: python -c "from pathlib import Path; import shutil; p=Path('.bookbench/cache/voicerender'); shutil.rmtree(p) if p.exists() else None"
 
       - name: BookBench doctor
-        run: bookbench doctor --engine "${{ inputs.engine }}"
+        id: doctor
+        run: python scripts/ci/run_e2e_doctor.py --engine "${{ inputs.engine }}" --output ".bookbench/evidence/${{ matrix.platform }}/doctor.json"
 
       - name: Run engine E2E
-        shell: bash
-        run: |
-          set -euo pipefail
-          RUN_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.engine }}"
-          bookbench run \
-            --engine "${{ inputs.engine }}" \
-            --run-id "$RUN_ID"
+        id: engine-e2e
+        run: bookbench run --engine "${{ inputs.engine }}" --run-id "gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.engine }}-${{ matrix.platform }}"
+
+      - name: Capture CI diagnostics and artifact metadata
+        if: always()
+        env:
+          BOOKBENCH_CI_SETUP_PYTHON_OUTCOME: ${{ steps.setup-python.outcome }}
+          BOOKBENCH_CI_INSTALL_DEPS_OUTCOME: ${{ steps.install-deps.outcome }}
+          BOOKBENCH_CI_INSTALL_CHECKOUT_OUTCOME: ${{ steps.install-bookbench.outcome }}
+          BOOKBENCH_CI_RUNTIME_CACHE_OUTCOME: ${{ steps.runtime-cache.outcome }}
+          BOOKBENCH_CI_BOOTSTRAP_LINUX_OUTCOME: ${{ steps.bootstrap-linux.outcome }}
+          BOOKBENCH_CI_BOOTSTRAP_MACOS_OUTCOME: ${{ steps.bootstrap-macos.outcome }}
+          BOOKBENCH_CI_BOOTSTRAP_WINDOWS_OUTCOME: ${{ steps.bootstrap-windows.outcome }}
+          BOOKBENCH_CI_RESOLVE_ASR_OUTCOME: ${{ steps.asr.outcome }}
+          BOOKBENCH_CI_MODEL_CACHE_OUTCOME: ${{ steps.model-cache.outcome }}
+          BOOKBENCH_CI_MODEL_VERIFY_OUTCOME: ${{ steps.verify-model.outcome }}
+          BOOKBENCH_CI_COLD_CACHE_OUTCOME: ${{ steps.cold-cache.outcome }}
+          BOOKBENCH_CI_DOCTOR_OUTCOME: ${{ steps.doctor.outcome }}
+          BOOKBENCH_CI_E2E_OUTCOME: ${{ steps.engine-e2e.outcome }}
+          BOOKBENCH_CI_JOB_STATUS: ${{ job.status }}
+        run: python scripts/ci/write_e2e_diagnostics.py --engine "${{ inputs.engine }}" --platform "${{ matrix.platform }}"
 
       - name: Upload BookBench evidence
+        id: upload-evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: bookbench-${{ inputs.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .bookbench/runs/gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.engine }}/
+          name: bookbench-${{ inputs.engine }}-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .bookbench/runs/gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.engine }}-${{ matrix.platform }}/
+            .bookbench/evidence/${{ matrix.platform }}/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Link platform evidence in job summary
+        if: always()
+        env:
+          BOOKBENCH_ARTIFACT_URL: ${{ steps.upload-evidence.outputs.artifact-url }}
+        run: python scripts/ci/write_e2e_summary.py --mode platform --engine "${{ inputs.engine }}" --platform "${{ matrix.platform }}" --job-status "${{ job.status }}" --run-id "${{ github.run_id }}" --attempt "${{ github.run_attempt }}"
+
+  merge:
+    if: always()
+    needs: e2e
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download available platform evidence
+        if: always()
+        uses: actions/download-artifact@v7
+        with:
+          pattern: bookbench-${{ inputs.engine }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .bookbench/platform-artifacts
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Assemble available platform evidence
+        if: always()
+        run: python scripts/ci/merge_e2e_evidence.py --engine "${{ inputs.engine }}" --run-id "${{ github.run_id }}" --attempt "${{ github.run_attempt }}" --downloaded-root ".bookbench/platform-artifacts" --output-root ".bookbench/merged-evidence" --matrix-result "${{ needs.e2e.result }}"
+
+      - name: Upload merged BookBench evidence
+        if: always()
+        id: upload-merged
+        uses: actions/upload-artifact@v7
+        with:
+          name: bookbench-${{ inputs.engine }}-merged-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .bookbench/merged-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Link merged evidence in job summary
+        if: always()
+        env:
+          BOOKBENCH_ARTIFACT_URL: ${{ steps.upload-merged.outputs.artifact-url }}
+        run: python scripts/ci/write_e2e_summary.py --mode merge --engine "${{ inputs.engine }}" --matrix-result "${{ needs.e2e.result }}" --run-id "${{ github.run_id }}" --attempt "${{ github.run_attempt }}"

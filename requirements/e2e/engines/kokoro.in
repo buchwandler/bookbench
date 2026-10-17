@@ -1,0 +1,2 @@
+-r ../base.in
+pykokoro[cpu]==0.10.5

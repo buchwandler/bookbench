@@ -118,36 +118,61 @@ If an existing config sets `max_wer = 0.0` but intends to tolerate variants such
 `audiobook` / `audio book`, replace that key with `max_compound_wer = 0.0`. Configuring both
 thresholds intentionally requires strict token-boundary equality too.
 
-## CI direction
+## CI and downloadable E2E evidence
 
-Six manually triggered workflows provide isolated E2E entry points: `E2E · Inflect`,
-`E2E · Kitten`, `E2E · Kokoro`, `E2E · Piper`, `E2E · Pocket`, and
-`E2E · Supertonic`. Each selects exactly one engine and calls the shared workflow on
-GitHub-hosted `ubuntu-24.04`. The existing full-matrix workflow remains an optional manual
-sweep.
+The six manually triggered per-engine workflows remain the primary E2E entry points: `E2E · Inflect`,
+`E2E · Kitten`, `E2E · Kokoro`, `E2E · Piper`, `E2E · Pocket`, and `E2E · Supertonic`.
+Each calls the shared reusable workflow with a non-fail-fast matrix of GitHub-hosted
+`ubuntu-24.04` (Linux x64), `windows-2025` (Windows x64), and `macos-15` (Apple Silicon ARM64).
+A failure on one platform does not cancel the remaining platform jobs. The manual
+`E2E · All Engines (hosted)` workflow invokes all six engines on that same matrix. Ordinary
+unit CI also runs on all three hosted operating systems with CPython 3.12. No workflow uses
+self-hosted runners.
 
-The shared job uses CPython 3.12 with CUDA visibility disabled. `requirements-e2e.in`
-pins the BookWandler command-line tools and CPU extras for all six engine integrations;
-`requirements-e2e.lock` locks their transitive dependencies with SHA-256 hashes. The
-workflow installs this lock before installing BookBench. `scripts/bootstrap-e2e-runtime.sh`
-installs the Ubuntu system prerequisites (`build-essential`, CMake, Git, FFmpeg, and
-espeak-ng) and builds CPU `whisper.cpp` at commit
-`0c7be696371069e0baa2515ed7aa08d5a5473aa6`, exporting the binary path for SpeechScope.
+### E2E dependency locks
 
-Regenerate the Python lock after changing a runtime pin with:
+`requirements/e2e/base.in` contains the shared BookWandler pipeline dependencies, while
+`requirements/e2e/engines/<engine>.in` adds only one synthesis integration. The committed
+`requirements/e2e/locks/<platform>/<engine>.lock` files pin all transitive dependencies with
+SHA-256 hashes for Linux x64, Windows x64, and macOS ARM64. The workflow installs only the lock
+for its selected engine and platform with `pip --require-hashes`.
+
+Regenerate all 18 locks after changing a runtime pin with:
 
 ```bash
-uv pip compile --python-version 3.12 --python-platform x86_64-unknown-linux-gnu \\
-  --generate-hashes --no-annotate -o requirements-e2e.lock requirements-e2e.in
+python -m pip install uv
+python scripts/ci/compile-e2e-locks.py
 ```
 
-The SpeechScope model is selected only by `bookbench.toml`; CI does not override it, so
-changing the model is a reviewed repository configuration change. CI caches SpeechScope
-model weights under `.ci-cache/speechscope-models`, keyed by OS, architecture, canonical
-model ref, and the primary artifact digest. It verifies restored model bytes before use.
-The VoiceRender synthesis cache at `.bookbench/cache/voicerender` is deleted before every
-E2E run so the selected renderer must synthesize fresh output. Run evidence under
-`.bookbench/runs/` is uploaded for each workflow.
+The compiler targets CPython 3.12 for every supported runner and fails if any target cannot be
+resolved. InflectSynth is temporarily pinned to upstream commit `a61b507` because release
+`0.1.1` lacks the VoiceRender request-measurement API; the source archive is SHA-256 verified
+in every Inflect lock until a compatible release is published.
+
+### Runtime setup and cache behavior
+
+The OS-specific scripts in `scripts/ci/bootstrap-e2e-linux.sh`,
+`scripts/ci/bootstrap-e2e-macos.sh`, and `scripts/ci/bootstrap-e2e-windows.ps1` verify their
+prerequisites and build the same CPU `whisper.cpp` revision
+`0c7be696371069e0baa2515ed7aa08d5a5473aa6`. The runtime cache is keyed by runner OS and
+architecture, and each bootstrap validates the cached revision and executable before reuse.
+The SpeechScope model remains selected only by `bookbench.toml`; CI restores it by OS,
+architecture, canonical model reference, and the primary artifact digest, then verifies the
+model bytes before use. The VoiceRender synthesis cache at
+`.bookbench/cache/voicerender` is removed before every run so synthesis must be cold.
+
+### Artifacts and failure diagnostics
+
+Each matrix job uploads `bookbench-<engine>-<platform>-<run_id>-<attempt>`. The artifact includes
+`README.md` and `ci-diagnostics.json` even when a pre-run step fails, `doctor.json` with full
+stdout/stderr and exit status when the doctor runs, and the BookBench run directory when a run
+starts. Diagnostic environment data uses an explicit non-secret allowlist. Job summaries link
+to each platform artifact.
+
+An always-run merge job collects whichever platform artifacts exist and publishes
+`bookbench-<engine>-merged-<run_id>-<attempt>` with a manifest of available and missing
+platforms. It records the original matrix result: a successful evidence merge never changes a
+failed E2E matrix to green. The merge artifact is also linked from the job summary.
 
 ## Voice comparison / A-B tests
 

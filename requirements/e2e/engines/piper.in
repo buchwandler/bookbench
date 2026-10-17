@@ -1,0 +1,2 @@
+-r ../base.in
+pipersynth[cpu]==0.2.5
