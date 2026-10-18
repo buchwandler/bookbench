@@ -44,6 +44,7 @@ STEP_OUTCOME_KEYS = {
     "model_cache": "BOOKBENCH_CI_MODEL_CACHE_OUTCOME",
     "verify_model": "BOOKBENCH_CI_MODEL_VERIFY_OUTCOME",
     "cold_synthesis_cache": "BOOKBENCH_CI_COLD_CACHE_OUTCOME",
+    "engine_runtime": "BOOKBENCH_CI_ENGINE_RUNTIME_OUTCOME",
     "doctor": "BOOKBENCH_CI_DOCTOR_OUTCOME",
     "e2e": "BOOKBENCH_CI_E2E_OUTCOME",
     "job": "BOOKBENCH_CI_JOB_STATUS",
@@ -108,6 +109,17 @@ def capture_diagnostics(
         except (OSError, json.JSONDecodeError):
             doctor_returncode = "unreadable"
 
+    runtime_path = output_dir / "engine-runtime.json"
+    engine_runtime_ok: bool | str | None = None
+    if runtime_path.is_file():
+        try:
+            runtime_report = json.loads(runtime_path.read_text(encoding="utf-8"))
+            engine_runtime_ok = runtime_report.get("ok") if isinstance(runtime_report, dict) else None
+            if not isinstance(engine_runtime_ok, bool):
+                engine_runtime_ok = "unreadable"
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            engine_runtime_ok = "unreadable"
+
     report: dict[str, object] = {
         "schema": "bookbench.e2e-ci-diagnostics.v1",
         "engine": engine,
@@ -129,6 +141,8 @@ def capture_diagnostics(
             "lock_sha256": _sha256(lock),
             "renderprofile_sha256": _sha256(profile),
             "doctor_output": doctor_path.is_file(),
+            "engine_runtime_output": runtime_path.is_file(),
+            "engine_runtime_ok": engine_runtime_ok,
             "doctor_returncode": doctor_returncode,
             "runtime_cache_present": (root / ".ci-cache" / "whispercpp").is_dir(),
             "speechscope_model_cache_present": Path(
@@ -160,6 +174,7 @@ def capture_diagnostics(
 - GitHub run: `{environment.get("GITHUB_RUN_ID", "local")}` (attempt `{environment.get("GITHUB_RUN_ATTEMPT", "unknown")}`)
 - CI diagnostics: `ci-diagnostics.json` (safe environment fields, tool versions, lock/profile hashes, and step outcomes)
 - Doctor report: `doctor.json` when the doctor step was reached; it contains the full command output and exit status.
+- Engine runtime report: `engine-runtime.json` when the readiness step ran; its success flag and step outcome are recorded in `ci-diagnostics.json`.
 - BookBench run evidence may be absent when the job failed before synthesis started.
 
 The diagnostic report uses an explicit environment-variable allowlist and does not serialize secrets.

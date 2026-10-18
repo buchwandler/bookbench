@@ -171,6 +171,7 @@ def _failure_item(
     error_code="preflight.reject",
     error_message="unknown capacity",
     replan_required=False,
+    preflight_report="chapter-0001/preflight.toml",
 ):
     return {
         "id": chapter_id,
@@ -179,7 +180,7 @@ def _failure_item(
         "error_code": error_code,
         "error_message": error_message,
         "replan_required": replan_required,
-        "preflight_report": "chapter-0001/preflight.toml",
+        "preflight_report": preflight_report,
     }
 
 
@@ -193,6 +194,7 @@ def _run_voice_render_scenario(
     speechscope_payload=None,
     speechscope=None,
     speechscope_returncode=0,
+    preflight_reports=None,
 ):
     import bookbench.runner as runner_module
 
@@ -220,6 +222,12 @@ def _run_voice_render_scenario(
         args = [str(value) for value in argv]
         if args[:2] == ["voicerender", "render-book"]:
             response = next(queued_results, (0, "", ""))
+            if response[0] != 0 and preflight_reports:
+                variant_dir = Path(args[2]) / "renderplan" / args[args.index("--variant") + 1]
+                for report_path, report_text in preflight_reports.items():
+                    report_file = variant_dir / report_path
+                    report_file.parent.mkdir(parents=True, exist_ok=True)
+                    report_file.write_text(report_text, encoding="utf-8")
             result = CommandResult(args, response[0], 0.0, response[1], response[2])
         elif args[:2] == ["utterplan", "replan-book"]:
             result = CommandResult(args, replan_returncode, 0.0, "", "replan rejected" if replan_returncode else "")
@@ -463,6 +471,102 @@ def test_hard_voicerender_reject_is_not_replanned_and_preserves_diagnostics(tmp_
     report = (run_dir / "listen.html").read_text(encoding="utf-8")
     assert "hard VoiceRender preflight reject" in report
     assert "capacity unknown" in report
+
+
+def test_voicerender_preflight_reports_are_safe_deduplicated_and_serialized(tmp_path, monkeypatch):
+    items = [
+        _failure_item(
+            chapter_id=f"chapter-{number:04d}",
+            preflight_report=f"chapter-{number:04d}/preflight.toml",
+        )
+        for number in range(1, 4)
+    ]
+    reports = {
+        f"chapter-{number:04d}/preflight.toml": (
+            "[[checks]]\n"
+            'source = "kitten.engine_error"\n'
+            'status = "failed"\n'
+            'metric = "runtime"\n'
+            'detail = "huggingface_hub is missing"\n'
+            f'segment_id = "segment-{number:04d}"\n'
+            f"segment_number = {number}\n\n"
+            "[[checks]]\n"
+            'source = "kitten.engine_error"\n'
+            'status = "pass"\n'
+            'detail = "passing check is ignored"\n'
+        )
+        for number in range(1, 4)
+    }
+
+    _, run_dir, results, _ = _run_voice_render_scenario(
+        tmp_path,
+        monkeypatch,
+        [_render_failure(items)],
+        preflight_reports=reports,
+    )
+
+    result = results[0]
+    assert result.failed_stage == "voicerender"
+    assert len(result.voicerender_preflight_checks) == 1
+    detail = result.voicerender_preflight_checks[0]
+    assert detail["source"] == "kitten.engine_error"
+    assert detail["detail"] == "huggingface_hub is missing"
+    assert detail["affected_segment_count"] == 3
+    assert detail["segments"] == [
+        {"segment_id": f"segment-{number:04d}", "segment_number": number} for number in range(1, 4)
+    ]
+    assert result.error.count('"source": "kitten.engine_error"') == 1
+    assert "affected_segment_count" in result.error
+
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    serialized_result = summary["results"][0]
+    assert serialized_result["failed_stage"] == "voicerender"
+    assert '"error_code": "preflight.reject"' in serialized_result["error"]
+    assert serialized_result["voicerender_preflight_checks"] == result.voicerender_preflight_checks
+
+
+def test_voicerender_preflight_rejects_unsafe_missing_and_invalid_reports(tmp_path):
+    from bookbench.runner import _voicerender_failure_message
+
+    variant_dir = tmp_path / "variant"
+    variant_dir.mkdir()
+    outside_report = tmp_path / "outside" / "preflight.toml"
+    outside_report.parent.mkdir()
+    outside_report.write_text(
+        '[[checks]]\nsource = "kitten.engine_error"\nstatus = "failed"\ndetail = "outside report"\n',
+        encoding="utf-8",
+    )
+    (variant_dir / "invalid.toml").write_text("[[checks]\ninvalid", encoding="utf-8")
+    cases = (
+        str(outside_report),
+        "../outside/preflight.toml",
+        "missing/preflight.toml",
+        "invalid.toml",
+    )
+    for report_path in cases:
+        item = _failure_item(preflight_report=report_path)
+        result = CommandResult(["voicerender", "render-book"], 1, 0.0, _render_failure([item])[1], "")
+        message = _voicerender_failure_message(result, variant_dir)
+        assert '"error_code": "preflight.reject"' in message
+        assert "preflight checks (deduplicated)" not in message
+
+
+def test_oversized_voicerender_preflight_report_is_not_opened(tmp_path, monkeypatch):
+    from bookbench.runner import _read_voicerender_preflight_checks
+
+    variant_dir = tmp_path / "variant"
+    report = variant_dir / "chapter-0001" / "preflight.toml"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"x" * (256 * 1024 + 1))
+    original_open = Path.open
+
+    def reject_oversized_read(path, *args, **kwargs):
+        if path == report.resolve():
+            raise AssertionError("oversized generated report must not be read")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_oversized_read)
+    assert _read_voicerender_preflight_checks(variant_dir, "chapter-0001/preflight.toml") == []
 
 
 def test_valid_voicerender_replan_retries_once_then_succeeds(tmp_path, monkeypatch):

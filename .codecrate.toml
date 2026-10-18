@@ -19,7 +19,9 @@ include = [
   "**/*.ssmd",
   "**/*.typed",
   "**/*.in",
+  "**/*.lock",
   "**/*.sh",
+  "**/*.ps1",
   "LICENSE",
 ]
 split_max_chars = 0

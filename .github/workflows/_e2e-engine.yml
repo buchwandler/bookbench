@@ -95,6 +95,10 @@ jobs:
         id: cold-cache
         run: python -c "from pathlib import Path; import shutil; p=Path('.bookbench/cache/voicerender'); shutil.rmtree(p) if p.exists() else None"
 
+
+      - name: Check engine runtime readiness
+        id: engine-runtime
+        run: python scripts/ci/check_engine_runtime.py --engine "${{ inputs.engine }}" --output ".bookbench/evidence/${{ matrix.platform }}/engine-runtime.json"
       - name: BookBench doctor
         id: doctor
         run: python scripts/ci/run_e2e_doctor.py --engine "${{ inputs.engine }}" --output ".bookbench/evidence/${{ matrix.platform }}/doctor.json"
@@ -117,6 +121,7 @@ jobs:
           BOOKBENCH_CI_MODEL_CACHE_OUTCOME: ${{ steps.model-cache.outcome }}
           BOOKBENCH_CI_MODEL_VERIFY_OUTCOME: ${{ steps.verify-model.outcome }}
           BOOKBENCH_CI_COLD_CACHE_OUTCOME: ${{ steps.cold-cache.outcome }}
+          BOOKBENCH_CI_ENGINE_RUNTIME_OUTCOME: ${{ steps.engine-runtime.outcome }}
           BOOKBENCH_CI_DOCTOR_OUTCOME: ${{ steps.doctor.outcome }}
           BOOKBENCH_CI_E2E_OUTCOME: ${{ steps.engine-e2e.outcome }}
           BOOKBENCH_CI_JOB_STATUS: ${{ job.status }}

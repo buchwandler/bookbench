@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -14,7 +16,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .config import Config, SpeechScopeConfig
@@ -60,7 +62,9 @@ def _version_probe_failed(version: str | None) -> bool:
 
 
 class PipelineError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, voicerender_preflight_checks: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.voicerender_preflight_checks = voicerender_preflight_checks
 
 
 def _utterplan_linguistics(profiles: list[ProfileCase], configured_spacy: str) -> dict[str, Any]:
@@ -209,12 +213,153 @@ def _voicerender_replanable(result: CommandResult) -> bool:
     )
 
 
-def _voicerender_failure_message(result: CommandResult) -> str:
+MAX_PREFLIGHT_REPORT_BYTES = 256 * 1024
+MAX_PREFLIGHT_VALUE_CHARS = 512
+MAX_PREFLIGHT_CHECKS = 64
+MAX_STORED_SEGMENTS_PER_CHECK = 32
+PREFLIGHT_PASS_STATUSES = frozenset({"pass", "passed", "ok", "ready"})
+PREFLIGHT_SECRET = re.compile(r"(?i)\b(?:hf_[a-z0-9_-]{8,}|(?:token|password|secret|authorization)\s*[=:]\s*)\S+")
+
+
+def _bounded_preflight_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    text = PREFLIGHT_SECRET.sub("[REDACTED]", text)
+    if not text:
+        return None
+    if len(text) > MAX_PREFLIGHT_VALUE_CHARS:
+        text = text[: MAX_PREFLIGHT_VALUE_CHARS - 1] + "…"
+    return text
+
+
+def _safe_preflight_report_path(variant_dir: Path, report_path: object) -> Path | None:
+    if not isinstance(report_path, str) or not report_path or "\x00" in report_path:
+        return None
+    posix_path = PurePosixPath(report_path)
+    windows_path = PureWindowsPath(report_path)
+    if posix_path.is_absolute() or windows_path.is_absolute() or windows_path.drive or windows_path.root:
+        return None
+    normalized = report_path.replace("\\", "/")
+    relative = PurePosixPath(normalized)
+    if any(part == ".." for part in relative.parts):
+        return None
+    try:
+        root = variant_dir.resolve(strict=True)
+        resolved = (root / Path(*relative.parts)).resolve(strict=True)
+        resolved.relative_to(root)
+        info = resolved.stat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PREFLIGHT_REPORT_BYTES:
+        return None
+    return resolved
+
+
+def _read_voicerender_preflight_checks(variant_dir: Path, report_path: object) -> list[dict[str, Any]]:
+    path = _safe_preflight_report_path(variant_dir, report_path)
+    if path is None:
+        return []
+    try:
+        with path.open("rb") as source:
+            content = source.read(MAX_PREFLIGHT_REPORT_BYTES + 1)
+        if len(content) > MAX_PREFLIGHT_REPORT_BYTES:
+            return []
+        document = tomllib.loads(content.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return []
+    checks = document.get("checks") if isinstance(document, dict) else None
+    if not isinstance(checks, list):
+        return []
+
+    extracted: list[dict[str, Any]] = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        status = _bounded_preflight_text(check.get("status"))
+        if status is None or status.casefold() in PREFLIGHT_PASS_STATUSES:
+            continue
+        item: dict[str, Any] = {"status": status}
+        for field in ("source", "metric", "detail"):
+            value = _bounded_preflight_text(check.get(field))
+            if value is not None:
+                item[field] = value
+        if not any(field in item for field in ("source", "metric", "detail")):
+            continue
+        segment_id = _bounded_preflight_text(check.get("segment_id"))
+        segment_number = check.get("segment_number")
+        if isinstance(segment_number, bool) or not isinstance(segment_number, (int, str)):
+            segment_number = None
+        elif isinstance(segment_number, str):
+            segment_number = _bounded_preflight_text(segment_number)
+        if segment_id is not None:
+            item["segment_id"] = segment_id
+        if segment_number is not None:
+            item["segment_number"] = segment_number
+        extracted.append(item)
+    return extracted
+
+
+def _deduplicate_voicerender_preflight_checks(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[object, ...], dict[str, Any]] = {}
+    for index, check in enumerate(checks):
+        key = tuple(check.get(field) for field in ("source", "status", "metric", "detail"))
+        group = groups.get(key)
+        if group is None:
+            if len(groups) >= MAX_PREFLIGHT_CHECKS:
+                continue
+            group = {field: check[field] for field in ("source", "status", "metric", "detail") if field in check}
+            group["segments"] = []
+            group["_seen_segments"] = set()
+            groups[key] = group
+        segment_id = check.get("segment_id")
+        segment_number = check.get("segment_number")
+        marker: tuple[object, ...] = (segment_id, segment_number)
+        if segment_id is None and segment_number is None:
+            marker = ("unidentified", index)
+        seen = group["_seen_segments"]
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if (segment_id is not None or segment_number is not None) and len(
+            group["segments"]
+        ) < MAX_STORED_SEGMENTS_PER_CHECK:
+            segment = {}
+            if segment_id is not None:
+                segment["segment_id"] = segment_id
+            if segment_number is not None:
+                segment["segment_number"] = segment_number
+            group["segments"].append(segment)
+
+    result: list[dict[str, Any]] = []
+    for group in groups.values():
+        seen = group.pop("_seen_segments")
+        group["affected_segment_count"] = len(seen)
+        if not group["segments"]:
+            del group["segments"]
+        result.append(group)
+    return result
+
+
+def _extract_voicerender_preflight_checks(
+    failed_items: list[dict[str, Any]], variant_dir: Path | None
+) -> list[dict[str, Any]]:
+    if variant_dir is None:
+        return []
+    checks: list[dict[str, Any]] = []
+    for item in failed_items:
+        checks.extend(_read_voicerender_preflight_checks(variant_dir, item.get("preflight_report")))
+    return _deduplicate_voicerender_preflight_checks(checks)
+
+
+def _voicerender_failure_diagnostics(
+    result: CommandResult, variant_dir: Path | None = None
+) -> tuple[str, list[dict[str, Any]]]:
     payload, invalid_reason = _parse_voicerender_failure(result)
     parts = ["VoiceRender failed at voicerender."]
     if invalid_reason is not None:
         parts.append(f"response is not safely replanable: {invalid_reason}")
-    failed = []
+    failed: list[dict[str, Any]] = []
     if payload is not None and isinstance(payload.get("items"), list):
         failed = [item for item in payload["items"] if isinstance(item, dict) and item.get("status") == "failed"]
     for item in failed:
@@ -235,6 +380,11 @@ def _voicerender_failure_message(result: CommandResult) -> str:
             "render_plan_id": item.get("render_plan_id"),
         }
         parts.append(f"{kind}: {json.dumps(diagnostic, sort_keys=True)}")
+
+    preflight_checks = _extract_voicerender_preflight_checks(failed, variant_dir)
+    if preflight_checks:
+        parts.append(f"VoiceRender preflight checks (deduplicated): {json.dumps(preflight_checks, sort_keys=True)}")
+
     if not failed and payload is not None:
         diagnostic = {
             "error_code": payload.get("error_code", payload.get("code")),
@@ -255,7 +405,11 @@ def _voicerender_failure_message(result: CommandResult) -> str:
     if len(parts) == 1:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         parts.append(detail)
-    return "\n".join(parts)
+    return "\n".join(parts), preflight_checks
+
+
+def _voicerender_failure_message(result: CommandResult, variant_dir: Path | None = None) -> str:
+    return _voicerender_failure_diagnostics(result, variant_dir)[0]
 
 
 @dataclass(slots=True)
@@ -273,6 +427,7 @@ class ProfileResult:
     word_boundary_match_count: int | None = None
     error: str | None = None
     failed_stage: str | None = None
+    voicerender_preflight_checks: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -814,9 +969,11 @@ class Harness:
             if rendered.returncode == 0:
                 return
             if not _voicerender_replanable(rendered):
-                raise PipelineError(_voicerender_failure_message(rendered))
+                message, checks = _voicerender_failure_diagnostics(rendered, context.variant_dir)
+                raise PipelineError(message, voicerender_preflight_checks=checks or None)
             if attempt >= self.config.max_replans:
-                raise PipelineError(_voicerender_failure_message(rendered))
+                message, checks = _voicerender_failure_diagnostics(rendered, context.variant_dir)
+                raise PipelineError(message, voicerender_preflight_checks=checks or None)
             self._replan_if_needed(run, context, rendered)
 
     def _replan_if_needed(self, run: RunContext, context: ProfileRunContext, rendered: CommandResult) -> None:
@@ -834,9 +991,11 @@ class Harness:
         )
         if replanned.returncode != 0:
             replan_detail = replanned.stderr.strip() or replanned.stdout.strip() or f"exit {replanned.returncode}"
+            failure_message, checks = _voicerender_failure_diagnostics(rendered, context.variant_dir)
             raise PipelineError(
                 "VoiceRender requested a capacity replan, but UtterPlan replan-book failed.\n"
-                f"VoiceRender: {_voicerender_failure_message(rendered)}\nreplan: {replan_detail}"
+                f"VoiceRender: {failure_message}\nreplan: {replan_detail}",
+                voicerender_preflight_checks=checks or None,
             )
 
     def _compose(self, run: RunContext, context: ProfileRunContext) -> None:
@@ -1203,6 +1362,7 @@ class Harness:
                     status="error",
                     error=str(exc),
                     failed_stage=self._current_stage,
+                    voicerender_preflight_checks=getattr(exc, "voicerender_preflight_checks", None),
                 )
                 results.append(result)
                 if self.config.fail_fast:

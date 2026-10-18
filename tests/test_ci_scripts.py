@@ -139,12 +139,17 @@ def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp
         json.dumps({"returncode": 1, "stderr": "api_incompatible"}),
         encoding="utf-8",
     )
+    (output_dir / "engine-runtime.json").write_text(
+        json.dumps({"engine": "inflect", "ok": True, "components": {}}, sort_keys=True),
+        encoding="utf-8",
+    )
     environment = {
         "GITHUB_RUN_ID": "12345",
         "RUNNER_OS": "Linux",
         "RUNNER_ARCH": "X64",
         "BOOKBENCH_CI_BOOTSTRAP_LINUX_OUTCOME": "failure",
         "BOOKBENCH_CI_DOCTOR_OUTCOME": "failure",
+        "BOOKBENCH_CI_ENGINE_RUNTIME_OUTCOME": "success",
         "SPEECHSCOPE_WHISPERCPP_BIN": str(tmp_path / "missing-whisper-cli"),
         "GITHUB_TOKEN": "must-not-be-recorded",
     }
@@ -163,12 +168,13 @@ def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp
     serialized_report = report_path.read_text(encoding="utf-8")
     assert "must-not-be-recorded" not in serialized_report
     assert "GITHUB_TOKEN" not in serialized_report
-    assert report["step_outcomes"] == {"bootstrap_linux": "failure", "doctor": "failure"}
-    assert report["step_outcomes"] == {"bootstrap_linux": "failure", "doctor": "failure"}
+    assert report["step_outcomes"] == {"bootstrap_linux": "failure", "engine_runtime": "success", "doctor": "failure"}
     files = report["files"]
     assert isinstance(files, dict)
     assert files["doctor_output"] is True
     assert files["doctor_returncode"] == 1
+    assert files["engine_runtime_output"] is True
+    assert files["engine_runtime_ok"] is True
     assert files["lock_sha256"] is not None
     runtime = report["runtime"]
     assert isinstance(runtime, dict)
@@ -240,3 +246,118 @@ def test_e2e_summary_links_platform_and_merged_artifacts(tmp_path):
     contents = summary_file.read_text(encoding="utf-8")
     assert "BookBench E2E: inflect / windows-x64" in contents
     assert "BookBench E2E merged evidence: inflect" in contents
+
+
+def test_engine_runtime_probe_writes_kitten_component_json_without_environment_secrets(tmp_path, monkeypatch, capsys):
+    from scripts.ci import check_engine_runtime
+
+    monkeypatch.setenv("HF_TOKEN", "hf_fake_token_123456")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        module_name = command[-2]
+        return subprocess.CompletedProcess(command, 0, json.dumps({"version": f"{module_name}-1.0"}), "")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fake_run)
+    output = tmp_path / "engine-runtime.json"
+    monkeypatch.setattr(
+        check_engine_runtime.sys,
+        "argv",
+        ["check_engine_runtime.py", "--engine", "kitten", "--output", str(output)],
+    )
+
+    assert check_engine_runtime.main() == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["engine"] == "kitten"
+    assert report["ok"] is True
+    assert set(report["components"]) == {"kittensynth", "onnxvoice", "onnxruntime", "huggingface_hub"}
+    assert all(item["status"] == "ready" for item in report["components"].values())
+    assert capsys.readouterr().out == output.read_text(encoding="utf-8")
+    assert len(calls) == 4
+    for command, kwargs in calls:
+        assert command[1] == "-I"
+        assert kwargs["timeout"] == 30
+        assert "HF_TOKEN" not in kwargs["env"]
+    assert "hf_fake_token_123456" not in output.read_text(encoding="utf-8")
+
+
+def test_engine_runtime_probe_distinguishes_missing_and_broken_imports_and_redacts_errors(monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    def fake_run(command, **kwargs):
+        module_name = command[-2]
+        if module_name == "kittensynth":
+            result = {
+                "error_type": "ModuleNotFoundError",
+                "error_message": "No module named 'kittensynth'",
+                "missing_name": "kittensynth",
+            }
+            return subprocess.CompletedProcess(command, 1, json.dumps(result), "")
+        if module_name == "onnxvoice":
+            result = {
+                "error_type": "ImportError",
+                "error_message": "bad import token=hf_FAKE_TOKEN_123456",
+                "missing_name": None,
+            }
+            return subprocess.CompletedProcess(command, 1, json.dumps(result), "")
+        return subprocess.CompletedProcess(command, 0, json.dumps({"version": "1.0"}), "")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fake_run)
+    report = check_engine_runtime.check_engine_runtime("kitten")
+
+    assert report["ok"] is False
+    assert report["components"]["kittensynth"]["status"] == "missing"
+    assert report["components"]["onnxvoice"]["status"] == "broken"
+    serialized = json.dumps(report)
+    assert "hf_FAKE_TOKEN_123456" not in serialized
+    assert "[REDACTED]" in serialized
+
+
+def test_missing_huggingface_hub_writes_structured_failure_and_returns_nonzero(tmp_path, monkeypatch, capsys):
+    from scripts.ci import check_engine_runtime
+
+    def fake_run(command, **kwargs):
+        module_name = command[-2]
+        if module_name == "huggingface_hub":
+            result = {
+                "error_type": "ModuleNotFoundError",
+                "error_message": "No module named 'huggingface_hub'",
+                "missing_name": "huggingface_hub",
+            }
+            return subprocess.CompletedProcess(command, 1, json.dumps(result), "")
+        return subprocess.CompletedProcess(command, 0, json.dumps({"version": "1.0"}), "")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fake_run)
+    output = tmp_path / "engine-runtime.json"
+    monkeypatch.setattr(
+        check_engine_runtime.sys,
+        "argv",
+        ["check_engine_runtime.py", "--engine", "kitten", "--output", str(output)],
+    )
+
+    assert check_engine_runtime.main() == 1
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["ok"] is False
+    assert report["components"]["huggingface_hub"] == {
+        "status": "missing",
+        "error": {"type": "ModuleNotFoundError", "message": "No module named 'huggingface_hub'"},
+    }
+    assert json.loads(capsys.readouterr().out) == report
+
+
+def test_engine_runtime_probe_uses_engine_specific_import_requirements(monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    imported = []
+
+    def fake_run(command, **kwargs):
+        imported.append(command[-2])
+        return subprocess.CompletedProcess(command, 0, json.dumps({"version": "1.0"}), "")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fake_run)
+    report = check_engine_runtime.check_engine_runtime("piper")
+
+    assert report["ok"] is True
+    assert set(imported) == {"pipersynth", "onnxvoice", "onnxruntime", "piperg2p"}
+    assert "huggingface_hub" not in imported
