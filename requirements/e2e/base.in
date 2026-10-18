@@ -2,7 +2,7 @@
 text2epub==0.1.4
 ssmdconvert==0.2.0
 utterplan[spacy]==0.6.3
-voicerender==0.2.2
+voicerender==0.2.3
 audiocompose[voicerender]==0.3.1
 audioexport==0.1.2
 speechscope==0.1.1

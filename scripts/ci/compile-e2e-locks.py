@@ -30,8 +30,8 @@ def main() -> None:
                 "--generate-hashes",
                 "--no-annotate",
                 "--output-file",
-                str(lock),
-                str(requirements),
+                str(lock.relative_to(ROOT)),
+                str(requirements.relative_to(ROOT)),
             ]
             print(f"Compiling {platform}/{engine}", flush=True)
             subprocess.run(command, cwd=ROOT, check=True)
