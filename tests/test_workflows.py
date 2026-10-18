@@ -204,3 +204,45 @@ def test_all_platform_bootstraps_verify_prerequisites_revision_and_executable():
     assert "choco install" in windows
     assert "CMake build failed" in windows
     assert "Could not discover whisper-cli.exe" in windows
+
+
+def test_hf_token_is_forwarded_only_by_pocket_manual_workflow():
+    pocket = (WORKFLOWS / "e2e-pocket.yml").read_text(encoding="utf-8")
+    assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" in pocket
+
+    for engine in ENGINES:
+        if engine == "pocket":
+            continue
+        content = (WORKFLOWS / f"e2e-{engine}.yml").read_text(encoding="utf-8")
+        assert "HF_TOKEN" not in content, f"unexpected HF_TOKEN forwarding for {engine}"
+
+
+def test_reusable_workflow_declares_optional_hf_token_and_scopes_it_to_e2e_step():
+    content = (WORKFLOWS / "_e2e-engine.yml").read_text(encoding="utf-8")
+    assert re.search(
+        r"(?ms)^    secrets:\n"
+        r"      HF_TOKEN:\n"
+        r"        required: false\s*$",
+        content,
+    )
+
+    engine_e2e_block = (
+        content
+        .split("      - name: Run engine E2E\n", maxsplit=1)[1]
+        .split("\n      - name:", maxsplit=1)[0]
+    )
+    assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" in engine_e2e_block
+    assert content.count("HF_TOKEN: ${{ secrets.HF_TOKEN }}") == 1
+    assert "secrets: inherit" not in content
+
+
+def test_aggregate_workflow_forwards_hf_token_only_to_pocket_job():
+    content = (WORKFLOWS / "e2e-all-engines.yml").read_text(encoding="utf-8")
+    pocket_job = (
+        content
+        .split("  pocket:\n", maxsplit=1)[1]
+        .split("\n  supertonic:\n", maxsplit=1)[0]
+    )
+    assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" in pocket_job
+    assert content.count("HF_TOKEN: ${{ secrets.HF_TOKEN }}") == 1
+    assert "secrets: inherit" not in content

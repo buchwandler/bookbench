@@ -130,6 +130,12 @@ A failure on one platform does not cancel the remaining platform jobs. The manua
 unit CI also runs on all three hosted operating systems with CPython 3.12. No workflow uses
 self-hosted runners.
 
+### Pocket gated-model access
+
+Pocket's predefined `alba` voice requires access to the gated Hugging Face repository `kyutai/pocket-tts`. Hosted Pocket E2E requires a GitHub Actions secret named `HF_TOKEN`; the Hugging Face account associated with that token must already have been granted access to the repository, and the token must have read permission.
+
+GitHub does not automatically pass repository secrets into reusable workflows. BookBench forwards the named secret explicitly from the Pocket workflow callers and exposes it only to the engine E2E synthesis step. It is not passed to other engine jobs or persisted in BookBench evidence, logs, configuration, or diagnostics.
+
 ### E2E dependency locks
 
 `requirements/e2e/base.in` contains the shared BookWandler pipeline dependencies, while

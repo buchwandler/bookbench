@@ -12,3 +12,5 @@ jobs:
     uses: ./.github/workflows/_e2e-engine.yml
     with:
       engine: pocket
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}

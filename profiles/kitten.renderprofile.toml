@@ -1,6 +1,6 @@
 default_role = "narrator"
 format = "renderprofile"
-profile_id = "sha256:a22ab7d59b222325717bcee0dc9a4694c22e50da2c17c80026f8940c1d6460ad"
+profile_id = "sha256:754ffae693479d796c82d9e044af14952baa8d1724b59bc5d21640acdfe50ffc"
 schema_version = 1
 
 [pauses]
@@ -27,7 +27,7 @@ voice = "Bella"
 speed = 1.0
 
 [roles.narrator.binding.renderer_metadata]
-capacity_policy_revision = "sha256:9f6eed3cf068cc13f162f87354d829ed1756ef48c72de12b20dc2351b89d6de5"
+capacity_policy_revision = "sha256:a7059c64451f15553f815121808d81b6ab08d5ae1fa02035da02f4aed54f975c"
 frontend = "kittensynth"
 max_tokens = 512
 pronunciation = "unsupported"
