@@ -1,0 +1,34 @@
+source = "fixtures/smoke.md"
+language = "en-US"
+title = "BookBench Same-Reference Clone Comparison"
+profiles_dir = "profiles"
+work_root = ".bookbench/runs"
+cache_dir = ".bookbench/cache/voicerender"
+chapters = "all"
+max_replans = 3
+fail_fast = false
+
+[speechscope]
+backend = "whispercpp"
+device = "cpu"
+model = "whispercpp:tiny.en-q5_1"
+normalization = "basic-v1"
+max_compound_wer = 0.0
+max_cer = 0.0
+reference_mode = "renderplan"
+
+[[voices]]
+name = "pocket-voicefolio"
+profile = "profiles/pocket.renderprofile.toml"
+
+[[voices]]
+name = "sopro-voicefolio"
+profile = "profiles/sopro.renderprofile.toml"
+
+# Optional Kokoro/Inno enrollment experiments must stay outside profiles/ and
+# only enter a deliberate comparison after the released VoiceRender CLI validates them.
+# [[voices]]
+# name = "kokoro-inno-voicefolio"
+# profile = "profiles-experimental/kokoro-inno-voicefolio.renderprofile.toml"
+
+# Qwen3 remains excluded until the exact reference transcript and all promotion gates pass.

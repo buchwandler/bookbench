@@ -1,0 +1,51 @@
+default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:d40598b2a404bcf4abde3fbb815e19086ae0382ac2c45c0542abf15fbdc81780"
+schema_version = 1
+
+[pauses]
+clause = "180ms"
+mode = "manual"
+paragraph = "800ms"
+sentence = "500ms"
+
+[planning]
+capacity_fallback = ["clause", "token"]
+split = "sentence"
+
+[roles]
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "sopro"
+target_id = "v2-turbo"
+
+[roles.narrator.binding.options]
+output_mode = "native"
+profile = "wasm-uint8"
+providers = "cpu"
+voice_level = "off"
+
+[roles.narrator.binding.options.voice_source]
+dataset = "alba-mackenna"
+kind = "managed_reference"
+license = "CC-BY-4.0"
+resolver = "voicefolio"
+sha256 = "46264e83cb99115c3d210260e029117566d9c64f20266d10daa78107759ede3e"
+source_path = "alba-mackenna/casual.wav"
+source_repository = "kyutai/tts-voices"
+source_revision = "323332d33f997de8394f24a193e1a76df720e01a"
+value = "kyutai-tts-voices:alba-mackenna/casual"
+variant = "original"
+
+[roles.narrator.binding.renderer_metadata]
+frontend = "soprosynth"
+pronunciation = "unsupported"
+source_revision = "7a645ef2aaecfea9"
+
+[roles.narrator.requirements]
+frontend = "soprosynth"
+pronunciation = "unsupported"
+token_fields = []

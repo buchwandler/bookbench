@@ -51,9 +51,11 @@ bookbench run --engine piper
 pytest -q
 ```
 
-The starter includes validated VoiceRender RenderProfiles for six engines. Refresh
-or replace any profile with `voicerender profile create` when its renderer snapshot
-or chosen voice needs updating.
+The starter includes validated VoiceRender RenderProfiles for seven engines.
+Pocket and Sopro clone the same pinned VoiceFolio reference; other profiles
+remain renderer-defined baselines. Refresh or replace a profile with
+`voicerender profile create` when its renderer snapshot or chosen voice needs
+updating.
 
 The repository uses one shared `bookbench.toml` plus VoiceRender-owned
 `*.renderprofile.toml` files under `profiles/`. See `profiles/README.md` for target
@@ -95,9 +97,16 @@ Each run is isolated under `.bookbench/runs/<run-id>/` and contains:
 BookBench discovers renderer identities from `roles.*.binding.renderer` in each
 RenderProfile. `required_engines` is enforced only for the unselected full matrix;
 explicit `--engine` and `--profile` runs check their selected cases without requiring
-unrelated engines. The repository currently gates the validated profiles for
-`inflect`, `kitten`, `kokoro`, `piper`, `pocket`, and `supertonic`. Add `sopro` only
-after a pinned local or managed reference voice is available and its profile validates.
+unrelated engines. The seven validated default engines are `inflect`, `kitten`,
+`kokoro`, `piper`, `pocket`, `sopro`, and `supertonic`.
+
+Pocket and Sopro use VoiceFolio-managed cloning from the same pinned Alba reference;
+their profiles contain portable catalog pins, not a named-voice fallback or a local
+WAV path. Other profiles retain their renderer-defined baseline voices. Qwen3 has
+CPU dependency, runtime, and model-cache infrastructure, but remains outside
+`profiles/`, `required_engines`, and manual workflows until an authoritative exact
+reference transcript and every promotion gate are satisfied. Do not invent a
+transcript or treat infrastructure support as engine promotion.
 
 ## Replanning
 
@@ -121,18 +130,24 @@ thresholds intentionally requires strict token-boundary equality too.
 
 ## CI and downloadable E2E evidence
 
-The six manually triggered per-engine workflows remain the primary E2E entry points: `E2E · Inflect`,
-`E2E · Kitten`, `E2E · Kokoro`, `E2E · Piper`, `E2E · Pocket`, and `E2E · Supertonic`.
+The seven manually triggered per-engine workflows are `E2E · Inflect`, `E2E · Kitten`,
+`E2E · Kokoro`, `E2E · Piper`, `E2E · Pocket`, `E2E · Sopro`, and `E2E · Supertonic`.
 Each calls the shared reusable workflow with a non-fail-fast matrix of GitHub-hosted
 `ubuntu-24.04` (Linux x64), `windows-2025` (Windows x64), and `macos-15` (Apple Silicon ARM64).
 A failure on one platform does not cancel the remaining platform jobs. The manual
-`E2E · All Engines (hosted)` workflow invokes all six engines on that same matrix. Ordinary
-unit CI also runs on all three hosted operating systems with CPython 3.12. No workflow uses
-self-hosted runners.
+`E2E · All Engines (hosted)` workflow invokes all seven engines on that same matrix.
+Qwen3 has lock/runtime/model preparation support but no executable workflow until its
+reference transcript and promotion gates are satisfied. Ordinary unit CI also runs on
+all three hosted operating systems with CPython 3.12. No workflow uses self-hosted runners.
 
 ### Pocket gated-model access
 
-Pocket's predefined `alba` voice requires access to the gated Hugging Face repository `kyutai/pocket-tts`. Hosted Pocket E2E requires a GitHub Actions secret named `HF_TOKEN`; the Hugging Face account associated with that token must already have been granted access to the repository, and the token must have read permission.
+Pocket's cloned voice uses the public VoiceFolio reference
+`kyutai-tts-voices:alba-mackenna/casual`; separately, PocketSynth's synthesis
+model `kyutai/pocket-tts` is gated on Hugging Face. Hosted Pocket E2E therefore
+requires a GitHub Actions secret named `HF_TOKEN`. The Hugging Face account
+associated with that token must already have access to the model repository, and
+the token must have read permission.
 
 GitHub does not automatically pass repository secrets into reusable workflows. BookBench forwards the named secret explicitly from the Pocket workflow callers and exposes it only to the engine E2E synthesis step. It is not passed to other engine jobs or persisted in BookBench evidence, logs, configuration, or diagnostics.
 
@@ -144,15 +159,18 @@ GitHub does not automatically pass repository secrets into reusable workflows. B
 SHA-256 hashes for Linux x64, Windows x64, and macOS ARM64. The workflow installs only the lock
 for its selected engine and platform with `pip --require-hashes`.
 
-Regenerate all 18 locks after changing a runtime pin with:
+Regenerate all 24 engine/platform locks after changing a runtime pin with:
 
 ```bash
 python -m pip install uv
 python scripts/ci/compile-e2e-locks.py
 ```
 
-The compiler targets CPython 3.12 for every supported runner and fails if any target cannot be
-The compiler targets CPython 3.12 for every supported runner and fails if any target cannot be resolved. InflectSynth is pinned to the v0.1.2 release, which supplies VoiceRender's request-measurement API and includes Hugging Face transport in the default dependency contract; all platform lockfiles carry hashes for the resolved release artifacts.
+The compiler targets CPython 3.12 for every supported runner and fails if any
+target cannot be resolved. InflectSynth is pinned to v0.1.2, which supplies
+VoiceRender's request-measurement API and includes Hugging Face transport in the
+default dependency contract; all platform lockfiles carry hashes for resolved
+release artifacts.
 
 ### Runtime setup and cache behavior
 
@@ -161,18 +179,35 @@ The OS-specific scripts in `scripts/ci/bootstrap-e2e-linux.sh`,
 prerequisites and build the same CPU `whisper.cpp` revision
 `0c7be696371069e0baa2515ed7aa08d5a5473aa6`. The runtime cache is keyed by runner OS and
 architecture, and each bootstrap validates the cached revision and executable before reuse.
-The SpeechScope model remains selected only by `bookbench.toml`; CI restores it by OS,
-architecture, canonical model reference, and the primary artifact digest, then verifies the
-model bytes before use. The VoiceRender synthesis cache at
-`.bookbench/cache/voicerender` is removed before every run so synthesis must be cold.
+
+The SpeechScope model is selected only by `bookbench.toml`; CI restores it by OS,
+architecture, canonical model reference, and primary artifact digest, then verifies the
+model bytes before use. VoiceFolio's independent reference cache is `.ci-cache/voicefolio`;
+it stores verified source assets by their immutable content pins. The separate ONNXVoice
+model cache is `.ci-cache/onnxvoice`; its key includes OS, architecture, engine, the model
+policy/ref/quality metadata, and the platform lock/profile fingerprint. Sopro uses
+`sopro:v2-turbo` with `wasm-uint8`; Qwen3's `qwen3:base-0.6b` / `int4` preparation remains
+gated and does not enable a default case.
+
+These caches have different owners and invalidation rules. Do not merge VoiceFolio or
+ONNXVoice data with SpeechScope's model/runtime caches or `.bookbench/cache/voicerender`.
+The generic `scripts/ci/prepare_reference_voice.py` step validates/fetches managed profile
+sources through VoiceFolio and writes `reference-voice.json` with pinned identity, cache
+state, and failure type; it never mutates profiles or records a local WAV path.
+`scripts/ci/ensure_engine_assets.py` verifies, installs on a miss, and re-verifies explicit
+ONNXVoice assets, recording `engine-assets.json` without command-output secrets. The
+VoiceRender synthesis cache at `.bookbench/cache/voicerender` is removed before every run
+so synthesis must be cold.
 
 ### Artifacts and failure diagnostics
 
-Each matrix job uploads `bookbench-<engine>-<platform>-<run_id>-<attempt>`. The artifact includes
-`README.md` and `ci-diagnostics.json` even when a pre-run step fails, `doctor.json` with full
-stdout/stderr and exit status when the doctor runs, and the BookBench run directory when a run
-starts. Diagnostic environment data uses an explicit non-secret allowlist. Job summaries link
-to each platform artifact.
+Each matrix job uploads `bookbench-<engine>-<platform>-<run_id>-<attempt>`. The artifact
+includes `README.md` and `ci-diagnostics.json` even when a pre-run step fails,
+`reference-voice.json` for VoiceFolio preparation, `engine-assets.json` for ONNXVoice
+verification, `engine-runtime.json` for import readiness, `doctor.json` with full
+stdout/stderr and exit status when the doctor runs, and the BookBench run directory when
+a run starts. Diagnostic environment data uses an explicit non-secret allowlist. Job
+summaries link to each platform artifact.
 
 An always-run merge job collects whichever platform artifacts exist and publishes
 `bookbench-<engine>-merged-<run_id>-<attempt>` with a manifest of available and missing
@@ -190,6 +225,17 @@ profile paths to compare other validated assets. Then run:
 bookbench -c bookbench-voice-compare.toml compare
 ```
 
+
+
+For the same-source Pocket/Sopro cloning comparison, use the dedicated example; both
+profiles point to the same pinned VoiceFolio reference:
+
+```bash
+cp bookbench-clone-compare.toml.example bookbench-clone-compare.toml
+bookbench -c bookbench-clone-compare.toml compare
+```
+
+The comparison is a listening/validation aid, not a perceptual voice-quality score.
 Open the `listen.html` path printed by BookBench. Each candidate row includes the full
 execution variant, engine, compound WER, strict WER, CER, and boundary-variant count, failure stage, listening copy, and links to its M4B
 export, expected transcript, and SpeechScope JSON when those artifacts are inside the run.

@@ -23,18 +23,33 @@ voicerender profile validate profiles/ENGINE.renderprofile.toml
 ```
 
 Some targets need a discovered voice or engine option. For example, the validated
-profiles in this checkout use `Bella` for Kitten, `af_heart` for Kokoro, `alba`
-for Pocket, and speaker `F1` with `seed=0` for Supertonic. Keep those values in
-the RenderProfile. Reference-voice engines may also require a real pinned local
-or managed reference input.
+profiles use `Bella` for Kitten, `af_heart` for Kokoro, and speaker `F1` with
+`seed=0` for Supertonic. Pocket no longer selects the named `alba` voice; it clones
+a managed VoiceFolio reference. Sopro uses the same managed reference. Reference
+voices must be pinned in `voice_source`; never put an exported local WAV path in a
+committed RenderProfile.
 
 ## Profiles in this checkout
 
-The current matrix includes validated profiles for `inflect`, `kitten`, `kokoro`,
-`piper`, `pocket`, and `supertonic`. `sopro` is not gated because profile creation
-requires a pinned local or managed reference voice that is not available here.
-Do not add guessed targets or placeholder reference paths. Add the engine to
-`required_engines` only after its profile can be created and validated.
+The seven validated default profiles are `inflect`, `kitten`, `kokoro`, `piper`,
+`pocket`, `sopro`, and `supertonic`. Pocket and Sopro are managed-reference clones
+of the same VoiceFolio entry, `kyutai-tts-voices:alba-mackenna/casual`; their
+profiles pin the catalog SHA-256, source revision, repository, path, license,
+dataset, and variant without storing an absolute WAV path. Sopro uses the released
+`v2-turbo` target with CPU provider and `wasm-uint8` quality.
+
+The other default profiles retain their renderer-defined baseline voice settings;
+a named/predefined voice is not a cloned reference voice. VoiceRender owns profile
+validation and clone semantics. VoiceFolio owns reference identity, integrity,
+fetching, cache, and provenance. BookBench only runs a generic CI preparation check
+and records safe evidence.
+
+Qwen3 has dependency, runtime, lock, and model-install infrastructure, but no
+profile in `profiles/`, no default-matrix entry, and no manual E2E workflow. The
+reference has no authoritative exact transcript, so do not guess one or add a
+named-voice fallback. Keep any later Kokoro/Inno experiment under
+`profiles-experimental/` and outside default profile discovery; do not promote it
+without a released-CLI-validated clone.
 
 To check or run one engine without requiring unrelated matrix engines:
 

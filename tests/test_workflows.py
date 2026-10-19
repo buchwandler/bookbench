@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
+
+from scripts.ci.engine_matrix import DEFAULT_ENGINES, ENGINE_CI, LOCK_ENGINES
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-ENGINES = ("inflect", "kitten", "kokoro", "piper", "pocket", "supertonic")
+ENGINES = DEFAULT_ENGINES
+
+
+def test_default_profiles_and_configs_match_shared_engine_registry():
+    profile_ids = {
+        path.name.removesuffix(".renderprofile.toml")
+        for path in (ROOT / "profiles").glob("*.renderprofile.toml")
+    }
+    assert profile_ids == set(ENGINES)
+
+    project_config = tomllib.loads((ROOT / "bookbench.toml").read_text(encoding="utf-8"))
+    matrix_example = tomllib.loads(
+        (ROOT / "bookbench-all-engines.toml.example").read_text(encoding="utf-8")
+    )
+    assert project_config["required_engines"] == list(ENGINES)
+    assert matrix_example["required_engines"] == list(ENGINES)
+    assert "qwen3" not in profile_ids
+    assert "qwen3" in LOCK_ENGINES
+    assert not (WORKFLOWS / "e2e-qwen3.yml").exists()
 
 
 def test_each_validated_engine_has_one_manual_reusable_workflow():
@@ -46,6 +67,22 @@ def test_shared_engine_workflow_verifies_model_cache_and_uploads_cold_run_eviden
     assert content.index("python -m pip install --require-hashes") < content.index("scripts/ci/bootstrap-e2e-linux.sh")
     assert "group: bookbench-e2e-${{ inputs.engine }}-${{ matrix.platform }}" in content
     assert "path: .ci-cache/whispercpp" in content
+
+    assert "VOICEFOLIO_CACHE_DIR: ${{ github.workspace }}/.ci-cache/voicefolio" in content
+    assert "ONNXVOICE_CACHE_DIR: ${{ github.workspace }}/.ci-cache/onnxvoice" in content
+    assert "path: .ci-cache/voicefolio" in content
+    assert "path: .ci-cache/onnxvoice" in content
+    assert "voicefolio-v1-${{ runner.os }}-${{ runner.arch }}-0.1.1-323332d33f997de8394f24a193e1a76df720e01a-46264e83cb99115c3d210260e029117566d9c64f20266d10daa78107759ede3e" in content
+    assert (
+        "hashFiles(format('requirements/e2e/locks/{0}/{1}.lock', matrix.platform, inputs.engine), "
+        "'scripts/ci/engine_matrix.py', format('profiles/{0}.renderprofile.toml', inputs.engine))" in content
+    )
+    assert "ensure_engine_assets.py --engine" in content
+    assert content.index("ensure_engine_assets.py --engine") < content.index("Check engine runtime readiness")
+    assert "prepare_reference_voice.py --engine" in content
+    assert content.index("prepare_reference_voice.py --engine") < content.index("BookBench doctor")
+    assert "reference-voice.json" in content
+    assert "BOOKBENCH_CI_REFERENCE_VOICE_OUTCOME: ${{ steps.reference-voice.outcome }}" in content
     assert "whispercpp-cpu-v1-${{ runner.os }}-${{ runner.arch }}-0c7be696371069e0baa2515ed7aa08d5a5473aa6" in content
     assert "if: runner.os == 'Linux'" in content
     assert "if: runner.os == 'macOS'" in content
@@ -120,14 +157,7 @@ def test_hosted_e2e_lock_and_whisper_bootstrap_are_pinned():
     assert "utterplan[spacy]==0.6.3" in base
     assert "en_core_web_sm-3.8.0-py3-none-any.whl" in base
 
-    package_names = {
-        "inflect": "inflectsynth",
-        "kitten": "kittensynth",
-        "kokoro": "pykokoro",
-        "piper": "pipersynth",
-        "pocket": "pocketsynth",
-        "supertonic": "supertonicsynth",
-    }
+    package_names = {engine.id: engine.distribution for engine in ENGINE_CI}
     inflect_requirement = "inflectsynth[cpu]==0.1.2"
     for engine, package in package_names.items():
         engine_input = (ROOT / "requirements" / "e2e" / "engines" / f"{engine}.in").read_text(encoding="utf-8")
@@ -150,6 +180,8 @@ def test_hosted_e2e_lock_and_whisper_bootstrap_are_pinned():
             assert package in locked_names
             assert not (unrelated_packages & locked_names)
             assert "--hash=sha256:" in lock
+            if engine == "qwen3":
+                assert "huggingface-hub==" not in lock
             if engine == "inflect":
                 assert "inflectsynth==0.1.2" in lock
                 assert "huggingface-hub==" in lock
@@ -246,3 +278,25 @@ def test_aggregate_workflow_forwards_hf_token_only_to_pocket_job():
     assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" in pocket_job
     assert content.count("HF_TOKEN: ${{ secrets.HF_TOKEN }}") == 1
     assert "secrets: inherit" not in content
+
+
+
+def test_documentation_explains_voice_ownership_caches_and_qwen_transcript_gate():
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    profile_docs = " ".join(
+        (ROOT / "profiles" / "README.md").read_text(encoding="utf-8").split()
+    )
+
+    assert "The seven validated default engines" in readme
+    assert "Pocket and Sopro use VoiceFolio-managed cloning" in readme
+    assert "Qwen3 has CPU dependency, runtime, and model-cache infrastructure" in readme
+    assert "Do not invent a" in readme and "reference transcript" in readme
+    assert ".ci-cache/voicefolio" in readme
+    assert ".ci-cache/onnxvoice" in readme
+    assert "reference-voice.json" in readme
+    assert "The seven manually triggered per-engine workflows" in readme
+    assert "The seven validated default profiles" in profile_docs
+    assert "a named/predefined voice is not a cloned reference voice" in profile_docs
+    assert "no authoritative exact transcript" in profile_docs
+    assert "profiles-experimental/" in profile_docs
+    assert "six manually triggered" not in readme

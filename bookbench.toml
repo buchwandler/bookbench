@@ -10,7 +10,7 @@ fail_fast = false
 
 # Gate only engines with committed, validated RenderProfiles.
 # Add another engine here after its profile has been created and validated.
-required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "supertonic"]
+required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "sopro", "supertonic"]
 
 [utterplan]
 spacy = "auto"

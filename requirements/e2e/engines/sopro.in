@@ -1,0 +1,2 @@
+-r ../base.in
+soprosynth[cpu]==0.1.1

@@ -10,8 +10,13 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+try:
+    from .engine_matrix import DEFAULT_ENGINES as ENGINES
+except ImportError:  # Script execution puts scripts/ci on sys.path.
+    from engine_matrix import DEFAULT_ENGINES as ENGINES
+
+
 ROOT = Path(__file__).resolve().parents[2]
-ENGINES = ("inflect", "kitten", "kokoro", "piper", "pocket", "supertonic")
 
 
 def resolve_context(engine: str, root: Path = ROOT) -> dict[str, str]:

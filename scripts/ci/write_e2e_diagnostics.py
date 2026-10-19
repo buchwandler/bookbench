@@ -12,8 +12,15 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
+try:
+    from .engine_matrix import ENGINE_PACKAGES
+    from .engine_matrix import LOCK_ENGINES as ENGINES
+except ImportError:  # Script execution puts scripts/ci on sys.path.
+    from engine_matrix import ENGINE_PACKAGES
+    from engine_matrix import LOCK_ENGINES as ENGINES
+
+
 ROOT = Path(__file__).resolve().parents[2]
-ENGINES = ("inflect", "kitten", "kokoro", "piper", "pocket", "supertonic")
 PLATFORMS = ("linux-x64", "windows-x64", "macos-arm64")
 SAFE_ENVIRONMENT_KEYS = (
     "CI",
@@ -31,6 +38,8 @@ SAFE_ENVIRONMENT_KEYS = (
     "RUNNER_NAME",
     "RUNNER_OS",
     "SPEECHSCOPE_MODEL_HOME",
+    "VOICEFOLIO_CACHE_DIR",
+    "ONNXVOICE_CACHE_DIR",
 )
 STEP_OUTCOME_KEYS = {
     "setup_python": "BOOKBENCH_CI_SETUP_PYTHON_OUTCOME",
@@ -42,6 +51,10 @@ STEP_OUTCOME_KEYS = {
     "bootstrap_windows": "BOOKBENCH_CI_BOOTSTRAP_WINDOWS_OUTCOME",
     "resolve_asr": "BOOKBENCH_CI_RESOLVE_ASR_OUTCOME",
     "model_cache": "BOOKBENCH_CI_MODEL_CACHE_OUTCOME",
+    "voicefolio_cache": "BOOKBENCH_CI_VOICEFOLIO_CACHE_OUTCOME",
+    "engine_asset_cache": "BOOKBENCH_CI_ENGINE_ASSET_CACHE_OUTCOME",
+    "engine_assets": "BOOKBENCH_CI_ENGINE_ASSETS_OUTCOME",
+    "reference_voice": "BOOKBENCH_CI_REFERENCE_VOICE_OUTCOME",
     "verify_model": "BOOKBENCH_CI_MODEL_VERIFY_OUTCOME",
     "cold_synthesis_cache": "BOOKBENCH_CI_COLD_CACHE_OUTCOME",
     "engine_runtime": "BOOKBENCH_CI_ENGINE_RUNTIME_OUTCOME",
@@ -49,13 +62,11 @@ STEP_OUTCOME_KEYS = {
     "e2e": "BOOKBENCH_CI_E2E_OUTCOME",
     "job": "BOOKBENCH_CI_JOB_STATUS",
 }
-ENGINE_PACKAGES = {
-    "inflect": "inflectsynth",
-    "kitten": "kittensynth",
-    "kokoro": "pykokoro",
-    "piper": "pipersynth",
-    "pocket": "pocketsynth",
-    "supertonic": "supertonicsynth",
+
+
+CACHE_HIT_KEYS = {
+    "voicefolio": "BOOKBENCH_CI_VOICEFOLIO_CACHE_HIT",
+    "onnxvoice": "BOOKBENCH_CI_ENGINE_ASSET_CACHE_HIT",
 }
 
 
@@ -120,6 +131,46 @@ def capture_diagnostics(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             engine_runtime_ok = "unreadable"
 
+
+
+    asset_path = output_dir / "engine-assets.json"
+    engine_asset_status: str | None = None
+    engine_asset_cache_hit: bool | None = None
+    if asset_path.is_file():
+        try:
+            asset_report = json.loads(asset_path.read_text(encoding="utf-8"))
+            if isinstance(asset_report, dict):
+                status = asset_report.get("status")
+                cache_hit = asset_report.get("cache_hit")
+                engine_asset_status = status if isinstance(status, str) else "unreadable"
+                engine_asset_cache_hit = cache_hit if isinstance(cache_hit, bool) else None
+            else:
+                engine_asset_status = "unreadable"
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            engine_asset_status = "unreadable"
+
+
+    reference_path = output_dir / "reference-voice.json"
+    reference_voice_status: str | None = None
+    reference_voice_cache_hits: list[bool | None] | None = None
+    if reference_path.is_file():
+        try:
+            reference_report = json.loads(reference_path.read_text(encoding="utf-8"))
+            if isinstance(reference_report, dict):
+                status = reference_report.get("status")
+                references = reference_report.get("references", [])
+                reference_voice_status = status if isinstance(status, str) else "unreadable"
+                if isinstance(references, list):
+                    reference_voice_cache_hits = [
+                        item.get("cache_hit")
+                        for item in references
+                        if isinstance(item, dict)
+                        and (item.get("cache_hit") is None or isinstance(item.get("cache_hit"), bool))
+                    ]
+            else:
+                reference_voice_status = "unreadable"
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            reference_voice_status = "unreadable"
     report: dict[str, object] = {
         "schema": "bookbench.e2e-ci-diagnostics.v1",
         "engine": engine,
@@ -135,6 +186,7 @@ def capture_diagnostics(
         "safe_environment": {key: environment[key] for key in SAFE_ENVIRONMENT_KEYS if key in environment},
         "step_outcomes": {name: environment[key] for name, key in STEP_OUTCOME_KEYS.items() if key in environment},
         "speechscope_config": speech_config,
+        "cache_hits": {name: environment[key] for name, key in CACHE_HIT_KEYS.items() if key in environment},
         "speechscope_config_error": config_error,
         "files": {
             "lock_path": lock.relative_to(root).as_posix(),
@@ -143,10 +195,22 @@ def capture_diagnostics(
             "doctor_output": doctor_path.is_file(),
             "engine_runtime_output": runtime_path.is_file(),
             "engine_runtime_ok": engine_runtime_ok,
+            "engine_assets_output": asset_path.is_file(),
+            "engine_assets_status": engine_asset_status,
+            "engine_assets_cache_hit": engine_asset_cache_hit,
+            "reference_voice_output": reference_path.is_file(),
+            "reference_voice_status": reference_voice_status,
+            "reference_voice_cache_hits": reference_voice_cache_hits,
             "doctor_returncode": doctor_returncode,
             "runtime_cache_present": (root / ".ci-cache" / "whispercpp").is_dir(),
             "speechscope_model_cache_present": Path(
                 environment.get("SPEECHSCOPE_MODEL_HOME", root / ".ci-cache" / "speechscope-models")
+            ).is_dir(),
+            "voicefolio_cache_present": Path(
+                environment.get("VOICEFOLIO_CACHE_DIR", root / ".ci-cache" / "voicefolio")
+            ).is_dir(),
+            "onnxvoice_cache_present": Path(
+                environment.get("ONNXVOICE_CACHE_DIR", root / ".ci-cache" / "onnxvoice")
             ).is_dir(),
         },
         "runtime": {
@@ -175,6 +239,8 @@ def capture_diagnostics(
 - CI diagnostics: `ci-diagnostics.json` (safe environment fields, tool versions, lock/profile hashes, and step outcomes)
 - Doctor report: `doctor.json` when the doctor step was reached; it contains the full command output and exit status.
 - Engine runtime report: `engine-runtime.json` when the readiness step ran; its success flag and step outcome are recorded in `ci-diagnostics.json`.
+- Engine asset report: `engine-assets.json` when ONNXVoice model verification ran; it records verified/cache-hit/install/failure status without command output secrets.
+- Reference voice report: `reference-voice.json` when present; it records managed-reference validation/fetch outcome, pinned source identity, cache state, and failure type without a local WAV path.
 - BookBench run evidence may be absent when the job failed before synthesis started.
 
 The diagnostic report uses an explicit environment-variable allowlist and does not serialize secrets.

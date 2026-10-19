@@ -7,7 +7,7 @@ cache_dir = ".bookbench/cache/voicerender"
 chapters = "all"
 max_replans = 3
 fail_fast = false
-required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "supertonic"]
+required_engines = ["inflect", "kitten", "kokoro", "piper", "pocket", "sopro", "supertonic"]
 
 [speechscope]
 backend = "redux"

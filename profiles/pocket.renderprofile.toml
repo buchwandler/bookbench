@@ -1,6 +1,6 @@
 default_role = "narrator"
 format = "renderprofile"
-profile_id = "sha256:6f0c3e0b491e59d04881711309d8729e050907cf0b54b4e72ca7a33ad1f640b8"
+profile_id = "sha256:f3dffc7d033c88917d03f8f92635aea5493e7f777f54e7479cc272a2fac0d476"
 schema_version = 1
 
 [pauses]
@@ -21,10 +21,21 @@ language = "en-US"
 [roles.narrator.binding]
 renderer = "pocket"
 target_id = "english_2026-04"
-voice = "alba"
 
 [roles.narrator.binding.options]
 precision = "int8"
+
+[roles.narrator.binding.options.voice_source]
+dataset = "alba-mackenna"
+kind = "managed_reference"
+license = "CC-BY-4.0"
+resolver = "voicefolio"
+sha256 = "46264e83cb99115c3d210260e029117566d9c64f20266d10daa78107759ede3e"
+source_path = "alba-mackenna/casual.wav"
+source_repository = "kyutai/tts-voices"
+source_revision = "323332d33f997de8394f24a193e1a76df720e01a"
+value = "kyutai-tts-voices:alba-mackenna/casual"
+variant = "original"
 
 [roles.narrator.binding.renderer_metadata]
 frontend = "pocketsynth"

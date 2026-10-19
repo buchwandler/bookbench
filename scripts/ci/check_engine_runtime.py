@@ -9,34 +9,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from .engine_matrix import ENGINE_COMPONENTS
+except ImportError:  # Script execution puts scripts/ci on sys.path.
+    from engine_matrix import ENGINE_COMPONENTS
+
 ROOT = Path(__file__).resolve().parents[2]
-ENGINE_COMPONENTS: dict[str, tuple[tuple[str, str], ...]] = {
-    "inflect": (
-        ("inflectsynth", "inflectsynth"),
-        ("onnxvoice", "onnxvoice"),
-        ("onnxruntime", "onnxruntime"),
-        ("huggingface_hub", "huggingface-hub"),
-    ),
-    "kitten": (
-        ("kittensynth", "kittensynth"),
-        ("onnxvoice", "onnxvoice"),
-        ("onnxruntime", "onnxruntime"),
-        ("huggingface_hub", "huggingface-hub"),
-    ),
-    "kokoro": (("pykokoro", "pykokoro"), ("onnxruntime", "onnxruntime")),
-    "piper": (
-        ("pipersynth", "pipersynth"),
-        ("onnxvoice", "onnxvoice"),
-        ("onnxruntime", "onnxruntime"),
-        ("piperg2p", "piperg2p"),
-    ),
-    "pocket": (
-        ("pocketsynth", "pocketsynth"),
-        ("onnxruntime", "onnxruntime"),
-        ("huggingface_hub", "huggingface-hub"),
-    ),
-    "supertonic": (("supertonicsynth", "supertonicsynth"), ("onnxruntime", "onnxruntime")),
-}
 MAX_ERROR_MESSAGE = 240
 IMPORT_PROBE = r"""
 import contextlib

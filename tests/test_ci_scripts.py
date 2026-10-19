@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+from pathlib import Path
+
+import pytest
 
 from scripts.ci import run_e2e_doctor
 
@@ -182,6 +186,75 @@ def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp
     assert "BookBench E2E evidence" in (output_dir / "README.md").read_text(encoding="utf-8")
 
 
+def test_sopro_diagnostics_capture_independent_caches_and_asset_status(tmp_path):
+    from scripts.ci import write_e2e_diagnostics
+
+    (tmp_path / "bookbench.toml").write_text(
+        '[speechscope]\nbackend = "whispercpp"\nmodel = "whispercpp:base"\ndevice = "cpu"\n',
+        encoding="utf-8",
+    )
+    profile = tmp_path / "profiles" / "sopro.renderprofile.toml"
+    profile.parent.mkdir()
+    profile.write_text("managed = true\n", encoding="utf-8")
+    lock = tmp_path / "requirements/e2e/locks/linux-x64/sopro.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("soprosynth==0.1.1\n", encoding="utf-8")
+    output_dir = tmp_path / ".bookbench/evidence/linux-x64"
+    output_dir.mkdir(parents=True)
+    (output_dir / "engine-assets.json").write_text(
+        json.dumps({"status": "installed_and_verified", "cache_hit": False}),
+        encoding="utf-8",
+    )
+    (output_dir / "reference-voice.json").write_text(
+        json.dumps(
+            {
+                "status": "verified",
+                "references": [{"ref": "kyutai-tts-voices:alba-mackenna/casual", "cache_hit": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    voicefolio_cache = tmp_path / "cache" / "voicefolio"
+    onnxvoice_cache = tmp_path / "cache" / "onnxvoice"
+    voicefolio_cache.mkdir(parents=True)
+    onnxvoice_cache.mkdir(parents=True)
+    environment = {
+        "RUNNER_OS": "Linux",
+        "RUNNER_ARCH": "X64",
+        "VOICEFOLIO_CACHE_DIR": str(voicefolio_cache),
+        "ONNXVOICE_CACHE_DIR": str(onnxvoice_cache),
+        "BOOKBENCH_CI_VOICEFOLIO_CACHE_OUTCOME": "success",
+        "BOOKBENCH_CI_ENGINE_ASSET_CACHE_OUTCOME": "success",
+        "BOOKBENCH_CI_ENGINE_ASSETS_OUTCOME": "success",
+        "BOOKBENCH_CI_REFERENCE_VOICE_OUTCOME": "success",
+        "BOOKBENCH_CI_VOICEFOLIO_CACHE_HIT": "true",
+        "BOOKBENCH_CI_ENGINE_ASSET_CACHE_HIT": "false",
+        "HF_TOKEN": "must-not-be-recorded",
+    }
+
+    report = write_e2e_diagnostics.capture_diagnostics(
+        "sopro", "linux-x64", output_dir, root=tmp_path, env=environment
+    )
+
+    assert report["step_outcomes"] == {
+        "voicefolio_cache": "success",
+        "engine_asset_cache": "success",
+        "engine_assets": "success",
+        "reference_voice": "success",
+    }
+    assert report["cache_hits"] == {"voicefolio": "true", "onnxvoice": "false"}
+    files = report["files"]
+    assert files["voicefolio_cache_present"] is True
+    assert files["onnxvoice_cache_present"] is True
+    assert files["engine_assets_output"] is True
+    assert files["engine_assets_status"] == "installed_and_verified"
+    assert files["engine_assets_cache_hit"] is False
+    assert files["reference_voice_output"] is True
+    assert files["reference_voice_status"] == "verified"
+    assert files["reference_voice_cache_hits"] == [True]
+    assert "must-not-be-recorded" not in (output_dir / "ci-diagnostics.json").read_text(encoding="utf-8")
+
+
 def test_merge_evidence_retains_available_platforms_and_records_matrix_failure(tmp_path):
     from scripts.ci import merge_e2e_evidence
 
@@ -346,7 +419,24 @@ def test_missing_huggingface_hub_writes_structured_failure_and_returns_nonzero(t
     assert json.loads(capsys.readouterr().out) == report
 
 
-def test_engine_runtime_probe_uses_engine_specific_import_requirements(monkeypatch):
+@pytest.mark.parametrize("engine", ("piper", "sopro", "qwen3"))
+def test_engine_runtime_probe_uses_engine_specific_import_requirements(engine, monkeypatch):
+    from scripts.ci import check_engine_runtime, engine_matrix
+
+    imported = []
+
+    def fake_run(command, **kwargs):
+        imported.append(command[-2])
+        return subprocess.CompletedProcess(command, 0, json.dumps({"version": "1.0"}), "")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fake_run)
+    report = check_engine_runtime.check_engine_runtime(engine)
+
+    expected = {module for module, _distribution in engine_matrix.ENGINE_COMPONENTS[engine]}
+    assert report["ok"] is True
+    assert set(imported) == expected
+    if engine == "qwen3":
+        assert "huggingface_hub" not in imported
     from scripts.ci import check_engine_runtime
 
     imported = []
@@ -361,3 +451,311 @@ def test_engine_runtime_probe_uses_engine_specific_import_requirements(monkeypat
     assert report["ok"] is True
     assert set(imported) == {"pipersynth", "onnxvoice", "onnxruntime", "piperg2p"}
     assert "huggingface_hub" not in imported
+
+
+
+def test_engine_ci_metadata_separates_default_matrix_from_qwen_infrastructure():
+    from scripts.ci import engine_matrix
+
+    assert engine_matrix.DEFAULT_ENGINES == (
+        "inflect",
+        "kitten",
+        "kokoro",
+        "piper",
+        "pocket",
+        "sopro",
+        "supertonic",
+    )
+    assert engine_matrix.LOCK_ENGINES == (
+        "inflect",
+        "kitten",
+        "kokoro",
+        "piper",
+        "pocket",
+        "qwen3",
+        "sopro",
+        "supertonic",
+    )
+    assert engine_matrix.ENGINE_PACKAGES["qwen3"] == "qwen3synth"
+    assert engine_matrix.ENGINE_COMPONENTS["sopro"] == (
+        ("soprosynth", "soprosynth"),
+        ("onnxvoice", "onnxvoice"),
+        ("onnxruntime", "onnxruntime"),
+    )
+    assert engine_matrix.ENGINE_COMPONENTS["qwen3"] == (
+        ("qwen3synth", "qwen3synth"),
+        ("onnxvoice", "onnxvoice"),
+        ("onnxruntime", "onnxruntime"),
+    )
+    assert "huggingface_hub" not in dict(engine_matrix.ENGINE_COMPONENTS["qwen3"])
+    assert engine_matrix.ENGINE_ASSETS == {
+        "qwen3": ("qwen3:base-0.6b", "int4"),
+        "sopro": ("sopro:v2-turbo", "wasm-uint8"),
+    }
+    assert "qwen3" not in engine_matrix.DEFAULT_ENGINES
+    assert not (Path(__file__).parents[1] / "profiles" / "qwen3.renderprofile.toml").exists()
+
+
+@pytest.mark.parametrize(
+    ("engine", "model_ref", "quality"),
+    (
+        ("sopro", "sopro:v2-turbo", "wasm-uint8"),
+        ("qwen3", "qwen3:base-0.6b", "int4"),
+    ),
+)
+def test_ensure_engine_asset_installs_and_reverifies_cache_miss(
+    engine, model_ref, quality, tmp_path
+):
+    from scripts.ci import ensure_engine_assets
+
+    calls = []
+    returncodes = iter((1, 0, 0))
+    environment = {"PATH": "/bin", "ONNXVOICE_CACHE_DIR": str(tmp_path / "models")}
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, next(returncodes), "", "")
+
+    report = ensure_engine_assets.ensure_engine_asset(engine, runner=fake_run, env=environment)
+
+    assert [command for command, _kwargs in calls] == [
+        ["onnxvoice", "verify", model_ref, "--quality", quality],
+        ["onnxvoice", "install", model_ref, "--quality", quality],
+        ["onnxvoice", "verify", model_ref, "--quality", quality],
+    ]
+    assert all(kwargs["env"] == environment for _command, kwargs in calls)
+    assert report["status"] == "installed_and_verified"
+    assert report["cache_hit"] is False
+    assert report["cache_dir"] == str((tmp_path / "models").resolve())
+
+
+def test_ensure_engine_asset_cache_hit_and_failure_evidence_are_non_secret(tmp_path):
+    from scripts.ci import ensure_engine_assets
+
+    calls = []
+    environment = {
+        "ONNXVOICE_CACHE_DIR": str(tmp_path / "models"),
+        "HF_TOKEN": "hf_fake_token_123456",
+    }
+
+    def cached_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "verified", "")
+
+    report = ensure_engine_assets.ensure_engine_asset("sopro", runner=cached_run, env=environment)
+    serialized = ensure_engine_assets.write_report(report)
+
+    assert [command for command, _kwargs in calls] == [
+        ["onnxvoice", "verify", "sopro:v2-turbo", "--quality", "wasm-uint8"]
+    ]
+    assert report["status"] == "verified"
+    assert report["cache_hit"] is True
+    assert "hf_fake_token_123456" not in serialized
+
+    returncodes = iter((1, 1))
+
+    def failed_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, next(returncodes), "", "authorization=hf_fake_token_abcdef"
+        )
+
+    failure = ensure_engine_assets.ensure_engine_asset("sopro", runner=failed_run, env=environment)
+    failure_json = ensure_engine_assets.write_report(failure)
+    assert failure["status"] == "failed"
+    assert failure["error"] == {"stage": "install", "returncode": 1, "message": "[REDACTED]"}
+    assert "hf_fake_token_abcdef" not in failure_json
+
+
+@pytest.mark.parametrize(
+    ("phases", "expected_cache_hit"),
+    (
+        (("cache_check", "verify", "ready"), True),
+        (("cache_check", "download", "verify", "ready"), False),
+    ),
+)
+def test_prepare_reference_voice_reports_cache_state_without_paths_or_profile_mutation(
+    phases, expected_cache_hit, tmp_path
+):
+    from types import SimpleNamespace
+
+    from scripts.ci import prepare_reference_voice
+
+    reference = "kyutai-tts-voices:alba-mackenna/casual"
+    profile = tmp_path / "sopro.renderprofile.toml"
+    profile.write_text(
+        "[roles.narrator.binding.options.voice_source]\n"
+        'kind = "managed_reference"\n'
+        'resolver = "voicefolio"\n'
+        f'value = "{reference}"\n',
+        encoding="utf-8",
+    )
+    original_profile = profile.read_bytes()
+    cache_dir = tmp_path / "cache" / "voicefolio"
+    entry = SimpleNamespace(ref=reference, sha256="a" * 64, source_revision="b" * 40)
+
+    def validator(source):
+        assert source["value"] == reference
+        return entry
+
+    def resolver(source, *, cache_dir, offline, progress):
+        assert source["value"] == reference
+        assert cache_dir == tmp_path / "cache" / "voicefolio"
+        assert offline is False
+        for phase in phases:
+            progress(SimpleNamespace(phase=phase))
+        return SimpleNamespace(path=tmp_path / "local-reference.wav")
+
+    report = prepare_reference_voice.prepare_reference_voice(
+        "sopro", profile, cache_dir=cache_dir, validator=validator, resolver=resolver
+    )
+    output = tmp_path / "reference-voice.json"
+    serialized = prepare_reference_voice.write_report(report, output)
+
+    assert report["status"] == "verified"
+    assert report["profile_sha256"] == hashlib.sha256(original_profile).hexdigest()
+    assert report["cache_dir"] == str(cache_dir.resolve())
+    assert report["references"] == [
+        {
+            "role": "narrator",
+            "ref": reference,
+            "sha256": "a" * 64,
+            "source_revision": "b" * 40,
+            "cache_hit": expected_cache_hit,
+            "status": "verified",
+        }
+    ]
+    assert serialized == prepare_reference_voice.write_report(report)
+    assert output.read_text(encoding="utf-8") == serialized
+    assert "local-reference.wav" not in serialized
+    assert profile.read_bytes() == original_profile
+
+
+def test_prepare_reference_voice_verification_failure_is_redacted(tmp_path):
+    from types import SimpleNamespace
+
+    import voicefolio
+
+    from scripts.ci import prepare_reference_voice
+
+    profile = tmp_path / "pocket.renderprofile.toml"
+    profile.write_text(
+        '[roles.narrator.binding.options.voice_source]\n'
+        'kind = "managed_reference"\n'
+        'resolver = "voicefolio"\n'
+        'value = "kyutai-tts-voices:alba-mackenna/casual"\n',
+        encoding="utf-8",
+    )
+    original_profile = profile.read_bytes()
+    entry = SimpleNamespace(
+        ref="kyutai-tts-voices:alba-mackenna/casual",
+        sha256="a" * 64,
+        source_revision="b" * 40,
+    )
+
+    def resolver(_source, *, cache_dir, offline, progress):
+        progress(SimpleNamespace(phase="cache_check"))
+        progress(SimpleNamespace(phase="verify"))
+        raise voicefolio.IntegrityError("authorization=hf_fake_token_123456")
+
+    report = prepare_reference_voice.prepare_reference_voice(
+        "pocket",
+        profile,
+        validator=lambda _source: entry,
+        resolver=resolver,
+    )
+    serialized = prepare_reference_voice.write_report(report)
+
+    assert report["status"] == "failed"
+    assert report["references"][0]["error_type"] == "IntegrityError"
+    assert report["references"][0]["cache_hit"] is True
+    assert "hf_fake_token_123456" not in serialized
+    assert profile.read_bytes() == original_profile
+
+
+def test_prepare_reference_voice_offline_miss_and_unknown_reference_fail_closed(tmp_path):
+    from types import SimpleNamespace
+
+    import voicefolio
+
+    from scripts.ci import prepare_reference_voice
+
+    profile = tmp_path / "pocket.renderprofile.toml"
+    profile.write_text(
+        '[roles.narrator.binding.options.voice_source]\n'
+        'kind = "managed_reference"\n'
+        'resolver = "voicefolio"\n'
+        'value = "kyutai-tts-voices:alba-mackenna/casual"\n',
+        encoding="utf-8",
+    )
+    entry = SimpleNamespace(
+        ref="kyutai-tts-voices:alba-mackenna/casual",
+        sha256="a" * 64,
+        source_revision="b" * 40,
+    )
+
+    def offline_resolver(_source, *, cache_dir, offline, progress):
+        assert offline is True
+        progress(SimpleNamespace(phase="cache_check"))
+        raise voicefolio.OfflineError("cache miss")
+
+    offline_report = prepare_reference_voice.prepare_reference_voice(
+        "pocket",
+        profile,
+        offline=True,
+        validator=lambda _source: entry,
+        resolver=offline_resolver,
+    )
+    assert offline_report["status"] == "failed"
+    assert offline_report["references"][0]["error_type"] == "OfflineError"
+    assert offline_report["references"][0]["cache_hit"] is False
+
+    resolver_called = False
+    profile.write_text(
+        '[roles.narrator.binding.options.voice_source]\n'
+        'kind = "managed_reference"\n'
+        'resolver = "voicefolio"\n'
+        'value = "kyutai-tts-voices:missing"\n',
+        encoding="utf-8",
+    )
+
+    def unknown_validator(_source):
+        assert _source["value"] == "kyutai-tts-voices:missing"
+        raise voicefolio.VoiceNotFoundError("unknown ref with token=hf_fake_token_abcdef")
+
+    def unused_resolver(*_args, **_kwargs):
+        nonlocal resolver_called
+        resolver_called = True
+        raise AssertionError("unknown references must not be fetched")
+
+    unknown_report = prepare_reference_voice.prepare_reference_voice(
+        "pocket",
+        profile,
+        validator=unknown_validator,
+        resolver=unused_resolver,
+    )
+    unknown_json = prepare_reference_voice.write_report(unknown_report)
+    assert unknown_report["status"] == "failed"
+    assert unknown_report["references"][0]["error_type"] == "VoiceNotFoundError"
+    assert unknown_report["references"][0]["cache_hit"] is None
+    assert resolver_called is False
+    assert "hf_fake_token_abcdef" not in unknown_json
+
+
+def test_prepare_reference_voice_skips_profiles_without_managed_references(tmp_path):
+    from scripts.ci import prepare_reference_voice
+
+    profile = tmp_path / "piper.renderprofile.toml"
+    profile.write_text(
+        '[roles.narrator.binding]\nrenderer = "piper"\nvoice = "en_US-lessac-medium"\n',
+        encoding="utf-8",
+    )
+    report = prepare_reference_voice.prepare_reference_voice(
+        "piper",
+        profile,
+        validator=lambda _source: (_ for _ in ()).throw(AssertionError("unexpected validation")),
+        resolver=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected resolution")
+        ),
+    )
+    assert report["status"] == "not_applicable"
+    assert report["references"] == []

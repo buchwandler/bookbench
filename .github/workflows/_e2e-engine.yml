@@ -19,6 +19,8 @@ permissions:
 env:
   SPEECHSCOPE_MODEL_HOME: ${{ github.workspace }}/.ci-cache/speechscope-models
   SPEECHSCOPE_WHISPERCPP_CACHE: ${{ github.workspace }}/.ci-cache/whispercpp
+  VOICEFOLIO_CACHE_DIR: ${{ github.workspace }}/.ci-cache/voicefolio
+  ONNXVOICE_CACHE_DIR: ${{ github.workspace }}/.ci-cache/onnxvoice
   CUDA_VISIBLE_DEVICES: ""
 
 jobs:
@@ -55,6 +57,23 @@ jobs:
       - name: Install BookBench checkout
         id: install-bookbench
         run: python -m pip install --no-deps --no-build-isolation -e .
+
+
+      - name: Restore managed VoiceFolio reference cache
+        id: voicefolio-cache
+        if: inputs.engine == 'pocket' || inputs.engine == 'sopro'
+        uses: actions/cache@v6
+        with:
+          path: .ci-cache/voicefolio
+          key: voicefolio-v1-${{ runner.os }}-${{ runner.arch }}-0.1.1-323332d33f997de8394f24a193e1a76df720e01a-46264e83cb99115c3d210260e029117566d9c64f20266d10daa78107759ede3e
+
+      - name: Restore ONNXVoice model cache
+        id: engine-asset-cache
+        if: inputs.engine == 'sopro' || inputs.engine == 'qwen3'
+        uses: actions/cache@v6
+        with:
+          path: .ci-cache/onnxvoice
+          key: onnxvoice-v1-${{ inputs.engine }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('requirements/e2e/locks/{0}/{1}.lock', matrix.platform, inputs.engine), 'scripts/ci/engine_matrix.py', format('profiles/{0}.renderprofile.toml', inputs.engine)) }}
 
       - name: Cache pinned whisper.cpp runtime
         id: runtime-cache
@@ -94,6 +113,17 @@ jobs:
         id: verify-model
         run: python scripts/ci/ensure_speechscope_model.py --model "${{ steps.asr.outputs.model }}"
 
+
+      - name: Verify or install ONNXVoice engine model
+        id: engine-assets
+        if: inputs.engine == 'sopro' || inputs.engine == 'qwen3'
+        run: python scripts/ci/ensure_engine_assets.py --engine "${{ inputs.engine }}" --output ".bookbench/evidence/${{ matrix.platform }}/engine-assets.json"
+
+
+      - name: Verify managed VoiceFolio references
+        id: reference-voice
+        run: python scripts/ci/prepare_reference_voice.py --engine "${{ inputs.engine }}" --output ".bookbench/evidence/${{ matrix.platform }}/reference-voice.json"
+
       - name: Force cold synthesis cache
         id: cold-cache
         run: python -c "from pathlib import Path; import shutil; p=Path('.bookbench/cache/voicerender'); shutil.rmtree(p) if p.exists() else None"
@@ -124,6 +154,12 @@ jobs:
           BOOKBENCH_CI_BOOTSTRAP_WINDOWS_OUTCOME: ${{ steps.bootstrap-windows.outcome }}
           BOOKBENCH_CI_RESOLVE_ASR_OUTCOME: ${{ steps.asr.outcome }}
           BOOKBENCH_CI_MODEL_CACHE_OUTCOME: ${{ steps.model-cache.outcome }}
+          BOOKBENCH_CI_VOICEFOLIO_CACHE_OUTCOME: ${{ steps.voicefolio-cache.outcome }}
+          BOOKBENCH_CI_ENGINE_ASSET_CACHE_OUTCOME: ${{ steps.engine-asset-cache.outcome }}
+          BOOKBENCH_CI_ENGINE_ASSETS_OUTCOME: ${{ steps.engine-assets.outcome }}
+          BOOKBENCH_CI_REFERENCE_VOICE_OUTCOME: ${{ steps.reference-voice.outcome }}
+          BOOKBENCH_CI_VOICEFOLIO_CACHE_HIT: ${{ steps.voicefolio-cache.outputs.cache-hit }}
+          BOOKBENCH_CI_ENGINE_ASSET_CACHE_HIT: ${{ steps.engine-asset-cache.outputs.cache-hit }}
           BOOKBENCH_CI_MODEL_VERIFY_OUTCOME: ${{ steps.verify-model.outcome }}
           BOOKBENCH_CI_COLD_CACHE_OUTCOME: ${{ steps.cold-cache.outcome }}
           BOOKBENCH_CI_ENGINE_RUNTIME_OUTCOME: ${{ steps.engine-runtime.outcome }}

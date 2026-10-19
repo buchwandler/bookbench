@@ -29,6 +29,10 @@ jobs:
       engine: pocket
     secrets:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  sopro:
+    uses: ./.github/workflows/_e2e-engine.yml
+    with:
+      engine: sopro
   supertonic:
     uses: ./.github/workflows/_e2e-engine.yml
     with:
