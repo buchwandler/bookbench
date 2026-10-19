@@ -12,7 +12,7 @@ authors = [{name = "Buchwandler"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.7"]
+dev = ["pytest>=8", "ruff>=0.7", "voicefolio==0.1.1"]
 
 [project.scripts]
 bookbench = "bookbench.cli:main"
