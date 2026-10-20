@@ -237,6 +237,21 @@ def test_all_platform_bootstraps_verify_prerequisites_revision_and_executable():
     assert "CMake build failed" in windows
     assert "Could not discover whisper-cli.exe" in windows
 
+    assert "Get-Command 'espeak-ng' -CommandType Application" in windows
+    assert "IsPathFullyQualified($EspeakExecutable)" in windows
+    assert "$EspeakExecutable --version" in windows
+    assert "Test-Path $EspeakExecutable -PathType Leaf" in windows
+    assert "throw \"espeak-ng failed its --version check (exit $LASTEXITCODE).\"" in windows
+    assert "$env:ESPEAKNG_RUNTIME_EXECUTABLE = $EspeakExecutable" in windows
+
+    github_env_block = windows.split("if ($env:GITHUB_ENV) {", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
+    assert "AppendAllText($env:GITHUB_ENV," in github_env_block
+    assert "ESPEAKNG_RUNTIME_EXECUTABLE=$EspeakExecutable" in github_env_block
+
+    github_path_block = windows.split("if ($env:GITHUB_PATH) {", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
+    assert "AppendAllText($env:GITHUB_PATH," in github_path_block
+    assert "$(Split-Path -Parent $EspeakExecutable)" in github_path_block
+
 
 def test_hf_token_is_forwarded_only_by_pocket_manual_workflow():
     pocket = (WORKFLOWS / "e2e-pocket.yml").read_text(encoding="utf-8")

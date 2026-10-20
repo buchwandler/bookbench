@@ -6,10 +6,18 @@ from types import MappingProxyType
 
 
 @dataclass(frozen=True)
+class RuntimeExecutable:
+    command: str
+    env_var: str | None = None
+    version_args: tuple[str, ...] = ("--version",)
+
+
+@dataclass(frozen=True)
 class EngineCI:
     id: str
     distribution: str
     import_components: tuple[tuple[str, str], ...]
+    runtime_executables: tuple[RuntimeExecutable, ...] = ()
     model_ref: str | None = None
     model_quality: str | None = None
     default_matrix: bool = True
@@ -24,6 +32,9 @@ ENGINE_CI: tuple[EngineCI, ...] = (
             ("onnxvoice", "onnxvoice"),
             ("onnxruntime", "onnxruntime"),
             ("huggingface_hub", "huggingface-hub"),
+        ),
+        runtime_executables=(
+            RuntimeExecutable("espeak-ng", env_var="ESPEAKNG_RUNTIME_EXECUTABLE"),
         ),
     ),
     EngineCI(
@@ -87,6 +98,9 @@ LOCK_ENGINES = tuple(engine.id for engine in ENGINE_CI)
 DEFAULT_ENGINES = tuple(engine.id for engine in ENGINE_CI if engine.default_matrix)
 ENGINE_COMPONENTS: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
     {engine.id: engine.import_components for engine in ENGINE_CI}
+)
+ENGINE_EXECUTABLES: Mapping[str, tuple[RuntimeExecutable, ...]] = MappingProxyType(
+    {engine.id: engine.runtime_executables for engine in ENGINE_CI}
 )
 ENGINE_PACKAGES: Mapping[str, str] = MappingProxyType(
     {engine.id: engine.distribution for engine in ENGINE_CI}

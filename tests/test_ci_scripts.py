@@ -124,7 +124,7 @@ def test_ensure_speechscope_model_installs_and_reverifies_after_cache_miss(monke
     ]
 
 
-def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp_path):
+def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp_path, monkeypatch):
     from scripts.ci import write_e2e_diagnostics
 
     (tmp_path / "bookbench.toml").write_text(
@@ -156,7 +156,15 @@ def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp
         "BOOKBENCH_CI_ENGINE_RUNTIME_OUTCOME": "success",
         "SPEECHSCOPE_WHISPERCPP_BIN": str(tmp_path / "missing-whisper-cli"),
         "GITHUB_TOKEN": "must-not-be-recorded",
+        "ESPEAKNG_RUNTIME_EXECUTABLE": str(tmp_path / "missing-espeak-ng.exe"),
+        "BOOKBENCH_PRIVATE_SECRET": "must-not-be-recorded-either",
     }
+    path_espeak = tmp_path / "path-espeak-ng.exe"
+    monkeypatch.setattr(
+        write_e2e_diagnostics.shutil,
+        "which",
+        lambda command, path=None: str(path_espeak) if command == "espeak-ng" else None,
+    )
 
     report = write_e2e_diagnostics.capture_diagnostics(
         "inflect",
@@ -183,7 +191,57 @@ def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp
     runtime = report["runtime"]
     assert isinstance(runtime, dict)
     assert runtime["whispercpp_executable_exists"] is False
+    assert runtime["espeakng_executable"] == str(tmp_path / "missing-espeak-ng.exe")
+    assert runtime["espeakng_executable_exists"] is False
+    assert runtime["espeakng_path_lookup"] == str(path_espeak)
+    assert report["safe_environment"]["ESPEAKNG_RUNTIME_EXECUTABLE"] == str(tmp_path / "missing-espeak-ng.exe")
+    assert "GITHUB_TOKEN" not in report["safe_environment"]
+    assert "BOOKBENCH_PRIVATE_SECRET" not in report["safe_environment"]
     assert "BookBench E2E evidence" in (output_dir / "README.md").read_text(encoding="utf-8")
+
+def test_ci_diagnostics_capture_existing_espeak_path_without_leaking_lookup_errors(tmp_path, monkeypatch):
+    from scripts.ci import write_e2e_diagnostics
+
+    (tmp_path / "bookbench.toml").write_text(
+        '[speechscope]\nbackend = "whispercpp"\nmodel = "whispercpp:base"\ndevice = "cpu"\n',
+        encoding="utf-8",
+    )
+    profile = tmp_path / "profiles" / "inflect.renderprofile.toml"
+    profile.parent.mkdir()
+    profile.write_text("profile = true\\n", encoding="utf-8")
+    lock = tmp_path / "requirements/e2e/locks/linux-x64/inflect.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("inflectsynth==0.1.2\\n", encoding="utf-8")
+    executable = tmp_path / "espeak-ng.exe"
+    executable.touch()
+    output_dir = tmp_path / ".bookbench/evidence/linux-x64"
+    environment = {
+        "ESPEAKNG_RUNTIME_EXECUTABLE": str(executable),
+        "HF_TOKEN": "hf_fake_secret_123456",
+        "BOOKBENCH_PRIVATE_SECRET": "also-secret",
+        "PATH": "",
+    }
+
+    def fail_lookup(command, path=None):
+        if command == "espeak-ng":
+            raise OSError("authorization=hf_fake_secret_123456")
+
+    monkeypatch.setattr(write_e2e_diagnostics.shutil, "which", fail_lookup)
+    report = write_e2e_diagnostics.capture_diagnostics(
+        "inflect", "linux-x64", output_dir, root=tmp_path, env=environment
+    )
+    serialized = (output_dir / "ci-diagnostics.json").read_text(encoding="utf-8")
+
+    assert report["runtime"]["espeakng_executable"] == str(executable)
+    assert report["runtime"]["espeakng_executable_exists"] is True
+    assert report["runtime"]["espeakng_path_lookup"] is None
+    assert report["safe_environment"]["ESPEAKNG_RUNTIME_EXECUTABLE"] == str(executable)
+    assert "HF_TOKEN" not in report["safe_environment"]
+    assert "BOOKBENCH_PRIVATE_SECRET" not in report["safe_environment"]
+    assert "hf_fake_secret_123456" not in serialized
+    assert "also-secret" not in serialized
+    assert "authorization=" not in serialized
+
 
 
 def test_sopro_diagnostics_capture_independent_caches_and_asset_status(tmp_path):
@@ -452,6 +510,158 @@ def test_engine_runtime_probe_uses_engine_specific_import_requirements(engine, m
     assert set(imported) == {"pipersynth", "onnxvoice", "onnxruntime", "piperg2p"}
     assert "huggingface_hub" not in imported
 
+
+
+def test_inflect_runtime_probe_accepts_explicit_espeak_path(tmp_path, monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    executable = tmp_path / "espeak-ng"
+    executable.touch()
+    monkeypatch.setenv("ESPEAKNG_RUNTIME_EXECUTABLE", str(executable))
+    monkeypatch.setattr(
+        check_engine_runtime,
+        "_component_result",
+        lambda _module, _distribution: {"status": "ready", "version": "1.0"},
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "eSpeak NG", "")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fake_run)
+    report = check_engine_runtime.check_engine_runtime("inflect")
+
+    assert report["ok"] is True
+    assert report["executables"]["espeak-ng"] == {
+        "status": "ready",
+        "path": str(executable),
+        "source": "ESPEAKNG_RUNTIME_EXECUTABLE",
+    }
+    assert calls[0][0] == [str(executable), "--version"]
+    assert calls[0][1]["timeout"] == check_engine_runtime.EXECUTABLE_PROBE_TIMEOUT
+    assert calls[0][1]["env"]["ESPEAKNG_RUNTIME_EXECUTABLE"] == str(executable)
+
+
+def test_inflect_runtime_probe_rejects_invalid_explicit_espeak_path_without_path_fallback(tmp_path, monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    configured_path = tmp_path / "missing-espeak-ng"
+    monkeypatch.setenv("ESPEAKNG_RUNTIME_EXECUTABLE", str(configured_path))
+    monkeypatch.setattr(
+        check_engine_runtime,
+        "_component_result",
+        lambda _module, _distribution: {"status": "ready", "version": "1.0"},
+    )
+    monkeypatch.setattr(
+        check_engine_runtime.shutil,
+        "which",
+        lambda _command: pytest.fail("invalid explicit path must not fall back to PATH"),
+    )
+    monkeypatch.setattr(
+        check_engine_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("invalid explicit path must not run"),
+    )
+
+    report = check_engine_runtime.check_engine_runtime("inflect")
+
+    assert report["ok"] is False
+    assert report["executables"]["espeak-ng"]["status"] == "missing"
+    assert report["executables"]["espeak-ng"]["source"] == "ESPEAKNG_RUNTIME_EXECUTABLE"
+    assert report["executables"]["espeak-ng"]["error"]["type"] == "ExecutableNotFound"
+
+
+def test_inflect_runtime_probe_resolves_espeak_from_path_when_no_override(tmp_path, monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    executable = tmp_path / "espeak-ng"
+    executable.touch()
+    monkeypatch.delenv("ESPEAKNG_RUNTIME_EXECUTABLE", raising=False)
+    monkeypatch.setattr(
+        check_engine_runtime,
+        "_component_result",
+        lambda _module, _distribution: {"status": "ready", "version": "1.0"},
+    )
+    monkeypatch.setattr(check_engine_runtime.shutil, "which", lambda command: str(executable))
+    monkeypatch.setattr(
+        check_engine_runtime.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "eSpeak NG", ""),
+    )
+
+    report = check_engine_runtime.check_engine_runtime("inflect")
+
+    assert report["ok"] is True
+    assert report["executables"]["espeak-ng"]["status"] == "ready"
+    assert report["executables"]["espeak-ng"]["source"] == "PATH"
+    assert report["executables"]["espeak-ng"]["path"] == str(executable)
+
+
+def test_inflect_runtime_probe_reports_structured_missing_espeak(tmp_path, monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    monkeypatch.delenv("ESPEAKNG_RUNTIME_EXECUTABLE", raising=False)
+    monkeypatch.setattr(
+        check_engine_runtime,
+        "_component_result",
+        lambda _module, _distribution: {"status": "ready", "version": "1.0"},
+    )
+    monkeypatch.setattr(check_engine_runtime.shutil, "which", lambda _command: None)
+
+    report = check_engine_runtime.check_engine_runtime("inflect")
+
+    assert report["ok"] is False
+    assert report["executables"]["espeak-ng"] == {
+        "status": "missing",
+        "path": None,
+        "source": "PATH",
+        "error": {
+            "type": "ExecutableNotFound",
+            "message": "Required executable 'espeak-ng' was not found.",
+        },
+    }
+
+
+def test_inflect_executable_probe_does_not_leak_exception_messages(tmp_path, monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    executable = tmp_path / "espeak-ng"
+    executable.touch()
+    monkeypatch.setenv("ESPEAKNG_RUNTIME_EXECUTABLE", str(executable))
+    monkeypatch.setattr(
+        check_engine_runtime,
+        "_component_result",
+        lambda _module, _distribution: {"status": "ready", "version": "1.0"},
+    )
+
+    def fail_to_run(_command, **_kwargs):
+        raise OSError("authorization=hf_fake_secret_123456")
+
+    monkeypatch.setattr(check_engine_runtime.subprocess, "run", fail_to_run)
+    report = check_engine_runtime.check_engine_runtime("inflect")
+    serialized = json.dumps(report)
+
+    assert report["ok"] is False
+    assert report["executables"]["espeak-ng"]["status"] == "broken"
+    assert "hf_fake_secret_123456" not in serialized
+    assert "authorization=" not in serialized
+
+
+@pytest.mark.parametrize("engine", ("kitten", "piper", "sopro", "qwen3"))
+def test_non_inflect_engines_have_no_espeak_runtime_requirement(engine, monkeypatch):
+    from scripts.ci import check_engine_runtime
+
+    monkeypatch.setattr(
+        check_engine_runtime,
+        "_component_result",
+        lambda _module, _distribution: {"status": "ready", "version": "1.0"},
+    )
+
+    report = check_engine_runtime.check_engine_runtime(engine)
+
+    assert report["ok"] is True
+    assert report["executables"] == {}
 
 
 def test_engine_ci_metadata_separates_default_matrix_from_qwen_infrastructure():

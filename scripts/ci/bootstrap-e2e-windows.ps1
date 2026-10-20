@@ -37,6 +37,20 @@ foreach ($commandName in @('git', 'cmake', 'ffmpeg', 'espeak-ng')) {
     }
 }
 
+$EspeakCommand = Get-Command 'espeak-ng' -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1
+$EspeakExecutable = (Resolve-Path -LiteralPath $EspeakCommand.Path -ErrorAction Stop).ProviderPath
+if ([string]::IsNullOrWhiteSpace($EspeakExecutable) -or
+    -not [System.IO.Path]::IsPathFullyQualified($EspeakExecutable) -or
+    -not (Test-Path $EspeakExecutable -PathType Leaf)) {
+    throw 'Could not resolve espeak-ng to an absolute executable file.'
+}
+& $EspeakExecutable --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "espeak-ng failed its --version check (exit $LASTEXITCODE)."
+}
+$env:ESPEAKNG_RUNTIME_EXECUTABLE = $EspeakExecutable
+
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
 $CachedRevision = ''
 if (Test-Path (Join-Path $SourceDir '.git')) {
@@ -87,10 +101,11 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($env:GITHUB_ENV) {
     $utf8 = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::AppendAllText($env:GITHUB_ENV, "SPEECHSCOPE_WHISPERCPP_BIN=$WhisperCli`n", $utf8)
+    [System.IO.File]::AppendAllText($env:GITHUB_ENV, "SPEECHSCOPE_WHISPERCPP_BIN=$WhisperCli`nESPEAKNG_RUNTIME_EXECUTABLE=$EspeakExecutable`n", $utf8)
 }
 if ($env:GITHUB_PATH) {
     $utf8 = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$(Split-Path -Parent $WhisperCli)`n", $utf8)
+    [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$(Split-Path -Parent $WhisperCli)`n$(Split-Path -Parent $EspeakExecutable)`n", $utf8)
 }
 Write-Host "Built whisper.cpp $WhisperCppRevision at $WhisperCli"
+Write-Host "Resolved eSpeak NG at $EspeakExecutable"

@@ -4,15 +4,16 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 try:
-    from .engine_matrix import ENGINE_COMPONENTS
+    from .engine_matrix import ENGINE_COMPONENTS, ENGINE_EXECUTABLES, RuntimeExecutable
 except ImportError:  # Script execution puts scripts/ci on sys.path.
-    from engine_matrix import ENGINE_COMPONENTS
+    from engine_matrix import ENGINE_COMPONENTS, ENGINE_EXECUTABLES, RuntimeExecutable
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_ERROR_MESSAGE = 240
@@ -64,7 +65,7 @@ def _safe_message(value: object) -> str:
 
 def _clean_environment() -> dict[str, str]:
     # Runtime imports need executable/DLL lookup and temporary paths, not user credentials.
-    safe_keys = ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+    safe_keys = ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "ESPEAKNG_RUNTIME_EXECUTABLE")
     return {key: os.environ[key] for key in safe_keys if key in os.environ}
 
 
@@ -116,6 +117,96 @@ def _component_result(module_name: str, distribution_name: str) -> dict[str, Any
     return {"status": status, "error": {"type": error_type, "message": _safe_message(message)}}
 
 
+
+EXECUTABLE_PROBE_TIMEOUT = 10
+
+
+def _executable_result(requirement: RuntimeExecutable) -> dict[str, Any]:
+    configured_path = (
+        os.environ.get(requirement.env_var)
+        if requirement.env_var is not None
+        else None
+    )
+    if requirement.env_var is not None and requirement.env_var in os.environ:
+        path = configured_path
+        source = requirement.env_var
+        if not path or not Path(path).is_file():
+            return {
+                "status": "missing",
+                "path": path,
+                "source": source,
+                "error": {
+                    "type": "ExecutableNotFound",
+                    "message": "Configured executable path does not point to a file.",
+                },
+            }
+    else:
+        path = shutil.which(requirement.command)
+        source = "PATH"
+        if not path:
+            return {
+                "status": "missing",
+                "path": None,
+                "source": source,
+                "error": {
+                    "type": "ExecutableNotFound",
+                    "message": f"Required executable '{requirement.command}' was not found.",
+                },
+            }
+        if not Path(path).is_file():
+            return {
+                "status": "missing",
+                "path": path,
+                "source": source,
+                "error": {
+                    "type": "ExecutableNotFound",
+                    "message": f"Resolved executable '{requirement.command}' is not a file.",
+                },
+            }
+
+    command = [path, *requirement.version_args]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            env=_clean_environment(),
+            text=True,
+            timeout=EXECUTABLE_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "broken",
+            "path": path,
+            "source": source,
+            "error": {
+                "type": "TimeoutExpired",
+                "message": f"Required executable '{requirement.command}' timed out during its readiness check.",
+            },
+        }
+    except OSError as exc:
+        return {
+            "status": "broken",
+            "path": path,
+            "source": source,
+            "error": {
+                "type": type(exc).__name__,
+                "message": f"Could not run required executable '{requirement.command}' for its readiness check.",
+            },
+        }
+
+    if completed.returncode != 0:
+        return {
+            "status": "broken",
+            "path": path,
+            "source": source,
+            "error": {
+                "type": "ExecutableCheckFailed",
+                "message": f"Required executable '{requirement.command}' failed its readiness check (exit {completed.returncode}).",
+            },
+        }
+    return {"status": "ready", "path": path, "source": source}
+
 def check_engine_runtime(engine: str) -> dict[str, Any]:
     if engine not in ENGINE_COMPONENTS:
         raise ValueError(f"unsupported engine: {engine}")
@@ -123,15 +214,21 @@ def check_engine_runtime(engine: str) -> dict[str, Any]:
         module_name: _component_result(module_name, distribution_name)
         for module_name, distribution_name in ENGINE_COMPONENTS[engine]
     }
+    executables = {
+        requirement.command: _executable_result(requirement)
+        for requirement in ENGINE_EXECUTABLES[engine]
+    }
     return {
         "engine": engine,
-        "ok": all(component["status"] == "ready" for component in components.values()),
+        "ok": all(component["status"] == "ready" for component in components.values())
+        and all(executable["status"] == "ready" for executable in executables.values()),
         "components": components,
+        "executables": executables,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check engine imports without downloading model assets.")
+    parser = argparse.ArgumentParser(description="Check engine runtime dependencies without downloading model assets.")
     parser.add_argument("--engine", required=True, choices=tuple(ENGINE_COMPONENTS))
     parser.add_argument("--output", type=Path, help="Optional path for the deterministic JSON report.")
     args = parser.parse_args()

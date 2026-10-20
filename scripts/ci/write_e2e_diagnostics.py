@@ -40,6 +40,7 @@ SAFE_ENVIRONMENT_KEYS = (
     "SPEECHSCOPE_MODEL_HOME",
     "VOICEFOLIO_CACHE_DIR",
     "ONNXVOICE_CACHE_DIR",
+    "ESPEAKNG_RUNTIME_EXECUTABLE",
 )
 STEP_OUTCOME_KEYS = {
     "setup_python": "BOOKBENCH_CI_SETUP_PYTHON_OUTCOME",
@@ -87,6 +88,24 @@ def _package_version(name: str) -> str | None:
         return None
 
 
+
+def _is_file(path: str | None) -> bool:
+    if not path:
+        return False
+    try:
+        return Path(path).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _path_lookup(command: str, environment: Mapping[str, str]) -> str | None:
+    search_path = environment.get("PATH", os.environ.get("PATH", ""))
+    try:
+        return shutil.which(command, path=search_path)
+    except (OSError, ValueError):
+        return None
+
+
 def capture_diagnostics(
     engine: str,
     platform_key: str,
@@ -112,6 +131,7 @@ def capture_diagnostics(
         config_error = f"{type(exc).__name__}: {exc}"
 
     whisper_bin = environment.get("SPEECHSCOPE_WHISPERCPP_BIN")
+    espeak_bin = environment.get("ESPEAKNG_RUNTIME_EXECUTABLE")
     doctor_path = output_dir / "doctor.json"
     doctor_returncode = None
     if doctor_path.is_file():
@@ -218,6 +238,9 @@ def capture_diagnostics(
             "speechscope_executable": shutil.which("speechscope"),
             "whispercpp_executable": whisper_bin,
             "whispercpp_executable_exists": bool(whisper_bin and Path(whisper_bin).is_file()),
+            "espeakng_executable": espeak_bin,
+            "espeakng_executable_exists": _is_file(espeak_bin),
+            "espeakng_path_lookup": _path_lookup("espeak-ng", environment),
         },
         "package_versions": {
             name: _package_version(name)
