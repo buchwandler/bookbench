@@ -74,7 +74,7 @@ def test_resolve_e2e_context_fingerprints_catalog_artifact_and_engine_profile(tm
     )
     profile = tmp_path / "profiles" / "inflect.renderprofile.toml"
     profile.parent.mkdir()
-    profile.write_text("profile = true\n", encoding="utf-8")
+    profile.write_bytes(b"profile = true\r\n")
     artifact_sha = "a" * 64
 
     def fake_run(command, **kwargs):

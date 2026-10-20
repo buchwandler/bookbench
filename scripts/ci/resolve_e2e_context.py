@@ -51,7 +51,9 @@ def resolve_context(engine: str, root: Path = ROOT) -> dict[str, str]:
     profile = root / "profiles" / f"{engine}.renderprofile.toml"
     if not profile.is_file():
         raise ValueError(f"missing engine profile: {profile}")
-    profile_sha = hashlib.sha256(profile.read_bytes()).hexdigest()
+    # Keep the CI fingerprint stable when Windows supplies CRLF profile bytes.
+    profile_bytes = profile.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    profile_sha = hashlib.sha256(profile_bytes).hexdigest()
     return {
         "model": model,
         "backend": backend,

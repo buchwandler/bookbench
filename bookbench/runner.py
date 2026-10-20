@@ -108,7 +108,7 @@ def _utterplan_plan_provenance(book: Path) -> list[dict[str, Any]]:
         for item in linguistics:
             if not isinstance(item, dict):
                 continue
-            record = {"plan": str(path.relative_to(book))}
+            record = {"plan": path.relative_to(book).as_posix()}
             for field in ("language", "provider", "model", "provider_version", "model_version"):
                 if field in item:
                     record[field] = item[field]
@@ -800,7 +800,7 @@ class Harness:
                         "variant_label": profile.variant_label,
                         "variant": profile.variant,
                         "engines": list(profile.engines),
-                        "staged_profile_target": str(
+                        "staged_profile_target": (
                             self.config.work_root
                             / "<run-id>"
                             / "book.ssmdbook"
@@ -808,7 +808,7 @@ class Harness:
                             / "_bookbench_profiles"
                             / profile.variant
                             / profile.path.name
-                        ),
+                        ).as_posix(),
                     }
                 )
                 valid_profiles.append(profile)

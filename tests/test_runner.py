@@ -370,7 +370,7 @@ def test_stage_profile_is_byte_exact_inside_renderplan_and_idempotent(tmp_path):
     assert case.variant in staged.parts
 
     variant_dir = book / "renderplan" / case.variant
-    provenance = posixpath.relpath(staged, variant_dir)
+    provenance = posixpath.relpath(staged.as_posix(), variant_dir.as_posix())
     assert not Path(provenance).is_absolute()
     assert "\\" not in provenance
     assert posixpath.normpath(provenance) == provenance
