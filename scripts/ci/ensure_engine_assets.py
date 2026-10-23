@@ -16,9 +16,7 @@ except ImportError:  # Script execution puts scripts/ci on sys.path.
     from engine_matrix import ENGINE_ASSETS
 
 ROOT = Path(__file__).resolve().parents[2]
-_SECRET_TEXT = re.compile(
-    r"(?i)\b(?:hf_[a-z0-9_-]{8,}|(?:token|password|secret|authorization)\s*[=:]\s*)\S+"
-)
+_SECRET_TEXT = re.compile(r"(?i)\b(?:hf_[a-z0-9_-]{8,}|(?:token|password|secret|authorization)\s*[=:]\s*)\S+")
 
 
 def _safe_message(value: object) -> str:

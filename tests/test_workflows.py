@@ -13,15 +13,12 @@ ENGINES = DEFAULT_ENGINES
 
 def test_default_profiles_and_configs_match_shared_engine_registry():
     profile_ids = {
-        path.name.removesuffix(".renderprofile.toml")
-        for path in (ROOT / "profiles").glob("*.renderprofile.toml")
+        path.name.removesuffix(".renderprofile.toml") for path in (ROOT / "profiles").glob("*.renderprofile.toml")
     }
     assert profile_ids == set(ENGINES)
 
     project_config = tomllib.loads((ROOT / "bookbench.toml").read_text(encoding="utf-8"))
-    matrix_example = tomllib.loads(
-        (ROOT / "bookbench-all-engines.toml.example").read_text(encoding="utf-8")
-    )
+    matrix_example = tomllib.loads((ROOT / "bookbench-all-engines.toml.example").read_text(encoding="utf-8"))
     assert project_config["required_engines"] == list(ENGINES)
     assert matrix_example["required_engines"] == list(ENGINES)
     assert "qwen3" not in profile_ids
@@ -72,7 +69,10 @@ def test_shared_engine_workflow_verifies_model_cache_and_uploads_cold_run_eviden
     assert "ONNXVOICE_CACHE_DIR: ${{ github.workspace }}/.ci-cache/onnxvoice" in content
     assert "path: .ci-cache/voicefolio" in content
     assert "path: .ci-cache/onnxvoice" in content
-    assert "voicefolio-v1-${{ runner.os }}-${{ runner.arch }}-0.1.1-323332d33f997de8394f24a193e1a76df720e01a-46264e83cb99115c3d210260e029117566d9c64f20266d10daa78107759ede3e" in content
+    assert (
+        "voicefolio-v1-${{ runner.os }}-${{ runner.arch }}-0.1.1-323332d33f997de8394f24a193e1a76df720e01a-46264e83cb99115c3d210260e029117566d9c64f20266d10daa78107759ede3e"
+        in content
+    )
     assert (
         "hashFiles(format('requirements/e2e/locks/{0}/{1}.lock', matrix.platform, inputs.engine), "
         "'scripts/ci/engine_matrix.py', format('profiles/{0}.renderprofile.toml', inputs.engine))" in content
@@ -241,7 +241,7 @@ def test_all_platform_bootstraps_verify_prerequisites_revision_and_executable():
     assert "IsPathFullyQualified($EspeakExecutable)" in windows
     assert "$EspeakExecutable --version" in windows
     assert "Test-Path $EspeakExecutable -PathType Leaf" in windows
-    assert "throw \"espeak-ng failed its --version check (exit $LASTEXITCODE).\"" in windows
+    assert 'throw "espeak-ng failed its --version check (exit $LASTEXITCODE)."' in windows
     assert "$env:ESPEAKNG_RUNTIME_EXECUTABLE = $EspeakExecutable" in windows
 
     github_env_block = windows.split("if ($env:GITHUB_ENV) {", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
@@ -273,11 +273,9 @@ def test_reusable_workflow_declares_optional_hf_token_and_scopes_it_to_e2e_step(
         content,
     )
 
-    engine_e2e_block = (
-        content
-        .split("      - name: Run engine E2E\n", maxsplit=1)[1]
-        .split("\n      - name:", maxsplit=1)[0]
-    )
+    engine_e2e_block = content.split("      - name: Run engine E2E\n", maxsplit=1)[1].split(
+        "\n      - name:", maxsplit=1
+    )[0]
     assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" in engine_e2e_block
     assert content.count("HF_TOKEN: ${{ secrets.HF_TOKEN }}") == 1
     assert "secrets: inherit" not in content
@@ -285,22 +283,15 @@ def test_reusable_workflow_declares_optional_hf_token_and_scopes_it_to_e2e_step(
 
 def test_aggregate_workflow_forwards_hf_token_only_to_pocket_job():
     content = (WORKFLOWS / "e2e-all-engines.yml").read_text(encoding="utf-8")
-    pocket_job = (
-        content
-        .split("  pocket:\n", maxsplit=1)[1]
-        .split("\n  supertonic:\n", maxsplit=1)[0]
-    )
+    pocket_job = content.split("  pocket:\n", maxsplit=1)[1].split("\n  supertonic:\n", maxsplit=1)[0]
     assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" in pocket_job
     assert content.count("HF_TOKEN: ${{ secrets.HF_TOKEN }}") == 1
     assert "secrets: inherit" not in content
 
 
-
 def test_documentation_explains_voice_ownership_caches_and_qwen_transcript_gate():
     readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
-    profile_docs = " ".join(
-        (ROOT / "profiles" / "README.md").read_text(encoding="utf-8").split()
-    )
+    profile_docs = " ".join((ROOT / "profiles" / "README.md").read_text(encoding="utf-8").split())
 
     assert "The seven validated default engines" in readme
     assert "Pocket and Sopro use VoiceFolio-managed cloning" in readme
@@ -315,3 +306,40 @@ def test_documentation_explains_voice_ownership_caches_and_qwen_transcript_gate(
     assert "no authoritative exact transcript" in profile_docs
     assert "profiles-experimental/" in profile_docs
     assert "six manually triggered" not in readme
+
+
+def test_pages_voice_gallery_workflow_uses_exact_run_and_least_privilege_deployment():
+    path = WORKFLOWS / "pages-voice-gallery.yml"
+    assert path.is_file()
+    content = path.read_text(encoding="utf-8")
+    assert 'workflows: ["E2E · All Engines (hosted)"]' in content
+    assert "types: [completed]" in content
+    assert "github.event.workflow_run.conclusion == 'success'" in content
+    assert "github.event.workflow_run.head_branch == github.event.repository.default_branch" in content
+    assert "ref: ${{ github.event.workflow_run.head_sha }}" in content
+    assert "run-id: ${{ github.event.workflow_run.id }}" in content
+    assert "${{ github.event.workflow_run.run_attempt }}" in content
+    assert "bookbench-*-linux-x64-" in content
+    assert "windows-x64" not in content and "macos-arm64" not in content
+    assert "runs-on: ubuntu-24.04" in content
+    assert "runs-on: self-hosted" not in content
+    assert "persist-credentials: false" in content
+
+    build_job, deploy_job = content.split("\n  deploy:\n", maxsplit=1)
+    build_job = build_job.split("\n  build:\n", maxsplit=1)[1]
+    assert "pages: write" not in build_job
+    assert "id-token: write" not in build_job
+    assert "pages: write" in deploy_job
+    assert "id-token: write" in deploy_job
+    assert "name: github-pages" in deploy_job
+    assert "needs: build" in deploy_job
+    assert content.index("scripts/ci/build_pages_site.py") < content.index("actions/upload-pages-artifact@v5")
+    assert content.index("actions/upload-pages-artifact@v5") < content.index("\n  deploy:\n")
+    assert "bookbench run" not in content
+    assert "git worktree" not in content.lower()
+    assert "git push" not in content.lower()
+
+    assert "actions/checkout@v7" in content
+    assert "actions/download-artifact@v8" in content
+    assert "actions/configure-pages@v6" in content
+    assert "actions/deploy-pages@v5" in content

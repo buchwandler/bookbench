@@ -1,0 +1,74 @@
+name: Publish · Voice Gallery
+
+on:
+  workflow_run:
+    workflows: ["E2E · All Engines (hosted)"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bookbench-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Download canonical Linux E2E artifacts
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: >-
+            bookbench-*-linux-x64-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: .bookbench/pages-input
+          merge-multiple: false
+
+      - name: Build validated voice gallery
+        run: >-
+          python scripts/ci/build_pages_site.py
+          --input-root .bookbench/pages-input
+          --output-root .bookbench/pages-site
+          --platform linux-x64
+          --repository "${{ github.repository }}"
+          --commit "${{ github.event.workflow_run.head_sha }}"
+          --run-id "${{ github.event.workflow_run.id }}"
+          --attempt "${{ github.event.workflow_run.run_attempt }}"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: .bookbench/pages-site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5

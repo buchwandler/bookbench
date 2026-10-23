@@ -31,8 +31,8 @@ def test_example_profile_identity_and_variant():
     root = Path(__file__).parents[1]
     info = inspect_profile(root / "profiles" / "piper.renderprofile.toml")
     assert info.engines == ("piper",)
-    assert info.targets == (("piper", "en_US-amy-medium"),)
-    assert info.variant == "piper--525856299523"
+    assert info.targets == (("piper", "en_US-ljspeech-medium"),)
+    assert info.variant == "piper--d3873ffdd3bc"
 
 
 def test_profile_required_token_fields_and_multi_role_union(tmp_path):
@@ -205,7 +205,6 @@ def test_sopro_profile_uses_same_voicefolio_reference_as_pocket():
     assert options["providers"] == "cpu"
     assert options["voice_source"] == VOICEFOLIO_REFERENCE
     assert not Path(options["voice_source"]["source_path"]).is_absolute()
-
 
 
 def test_clone_comparison_example_uses_the_same_voicefolio_reference():

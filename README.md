@@ -214,6 +214,18 @@ An always-run merge job collects whichever platform artifacts exist and publishe
 platforms. It records the original matrix result: a successful evidence merge never changes a
 failed E2E matrix to green. The merge artifact is also linked from the job summary.
 
+## Public voice gallery
+
+The GitHub Pages voice gallery is generated only after a successful `E2E · All Engines (hosted)` workflow run from the repository's default branch. The publisher downloads artifacts from that exact workflow run and attempt, then fails closed unless every engine in `scripts.ci.engine_matrix.DEFAULT_ENGINES` has a passing, validated profile and listening MP3. It never runs synthesis; each published recording is BookBench's existing `exports/<profile>.listen.mp3` produced and validated by the audiobook pipeline.
+
+The v1 gallery publishes one sample per promoted engine from the canonical `linux-x64` runner. Source platform, tested profile/variant, target and available voice metadata, commit, Actions run, and audio SHA-256 are shown with each sample. Audio URLs are content-addressed so changed samples do not reuse stale URLs. Native browser playback is used, and starting one sample pauses any other gallery player.
+
+Compound WER, strict WER, and CER measure spoken-content correctness. They are validation metrics, not subjective voice-quality scores and are not used to rank voices. Pocket and Sopro are identified as cloning profiles using the same VoiceFolio-managed reference (`kyutai-tts-voices:alba-mackenna/casual`, dataset `alba-mackenna`, license `CC-BY-4.0`, resolver `voicefolio`). The reference WAV itself is not published in v1. Project policy approves public redistribution of the generated smoke samples.
+
+Pages contains only the generated HTML, CSS, small playback script, `gallery.json`, and selected `.listen.mp3` files. It does not contain complete `.bookbench/runs/` trees, commands logs, CI diagnostics, M4B exports, validation WAVs, raw environment data, secrets, or runner-local paths. Full E2E evidence remains in the separate Actions artifacts, which retain their configured 14-day expiry; the gallery preserves the selected MP3s until a later successful publication replaces them. A failed or incomplete build is not deployed, leaving the last successful Pages deployment intact.
+
+To enable deployment, set the repository's Pages source to **GitHub Actions** at **Settings → Pages → Build and deployment → Source**. The publisher uses the standard `github-pages` environment and workflow-provided permissions; it requires no custom deployment token or secret. After Pages has been enabled and the first deployment succeeds, add the verified deployed URL near the top of this README.
+
 ## Voice comparison / A-B tests
 
 `bookbench compare` runs an explicit `[[voices]]` matrix and generates `listen.html` with per-voice playback controls.
@@ -224,8 +236,6 @@ profile paths to compare other validated assets. Then run:
 ```bash
 bookbench -c bookbench-voice-compare.toml compare
 ```
-
-
 
 For the same-source Pocket/Sopro cloning comparison, use the dedicated example; both
 profiles point to the same pinned VoiceFolio reference:

@@ -5,6 +5,13 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
+_PLAYER_SCRIPT = """document.addEventListener(\"play\", (event) => {
+  if (!(event.target instanceof HTMLAudioElement)) return;
+  document.querySelectorAll(\"audio\").forEach((audio) => {
+    if (audio !== event.target) audio.pause();
+  });
+}, true);"""
+
 
 def _relative_path(run_dir: Path, path: str | Path | None) -> str | None:
     if path is None:
@@ -97,7 +104,7 @@ reports are linked for inspection.</p>
 <table><thead><tr><th>Candidate</th><th>Variant</th><th>Engine</th><th>Status</th><th>Compound WER</th><th>Strict WER</th><th>CER</th><th>Boundary variants</th>
 <th>Failed stage</th><th>Recording</th><th>Artifacts and error</th></tr></thead><tbody>"""
         + "\n".join(rows)
-        + "</tbody></table></body></html>"
+        + f"</tbody></table><script>{_PLAYER_SCRIPT}</script></body></html>"
     )
     out = run_dir / "listen.html"
     out.write_text(html, encoding="utf-8")

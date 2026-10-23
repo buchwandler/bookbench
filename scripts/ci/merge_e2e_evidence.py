@@ -6,7 +6,8 @@ import re
 import shutil
 from pathlib import Path
 
-ENGINES = ("inflect", "kitten", "kokoro", "piper", "pocket", "supertonic")
+from scripts.ci.engine_matrix import DEFAULT_ENGINES
+
 PLATFORMS = ("linux-x64", "windows-x64", "macos-arm64")
 
 
@@ -18,7 +19,7 @@ def merge_evidence(
     output_root: Path,
     matrix_result: str,
 ) -> dict[str, object]:
-    if engine not in ENGINES:
+    if engine not in DEFAULT_ENGINES:
         raise ValueError(f"unsupported engine: {engine}")
     for value, label in ((run_id, "run id"), (attempt, "run attempt")):
         if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
@@ -70,7 +71,7 @@ The merged artifact retains whichever platform artifacts were uploaded. Missing 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Merge whatever platform E2E evidence artifacts are available.")
-    parser.add_argument("--engine", required=True, choices=ENGINES)
+    parser.add_argument("--engine", required=True, choices=DEFAULT_ENGINES)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt", required=True)
     parser.add_argument("--downloaded-root", type=Path, required=True)

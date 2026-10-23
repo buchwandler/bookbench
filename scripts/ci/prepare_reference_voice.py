@@ -80,9 +80,7 @@ def prepare_reference_voice(
 ) -> dict[str, Any]:
     """Verify VoiceFolio sources in a profile and emit non-secret preparation evidence."""
     cache_value = cache_dir if cache_dir is not None else os.environ.get("VOICEFOLIO_CACHE_DIR")
-    reported_cache_dir = (
-        str(Path(cache_value).expanduser().resolve()) if cache_value is not None else None
-    )
+    reported_cache_dir = str(Path(cache_value).expanduser().resolve()) if cache_value is not None else None
     report: dict[str, Any] = {
         "schema": "bookbench.reference-voice.v1",
         "engine": engine,

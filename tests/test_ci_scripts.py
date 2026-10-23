@@ -199,6 +199,7 @@ def test_ci_diagnostics_include_failure_metadata_without_serializing_secrets(tmp
     assert "BOOKBENCH_PRIVATE_SECRET" not in report["safe_environment"]
     assert "BookBench E2E evidence" in (output_dir / "README.md").read_text(encoding="utf-8")
 
+
 def test_ci_diagnostics_capture_existing_espeak_path_without_leaking_lookup_errors(tmp_path, monkeypatch):
     from scripts.ci import write_e2e_diagnostics
 
@@ -241,7 +242,6 @@ def test_ci_diagnostics_capture_existing_espeak_path_without_leaking_lookup_erro
     assert "hf_fake_secret_123456" not in serialized
     assert "also-secret" not in serialized
     assert "authorization=" not in serialized
-
 
 
 def test_sopro_diagnostics_capture_independent_caches_and_asset_status(tmp_path):
@@ -290,9 +290,7 @@ def test_sopro_diagnostics_capture_independent_caches_and_asset_status(tmp_path)
         "HF_TOKEN": "must-not-be-recorded",
     }
 
-    report = write_e2e_diagnostics.capture_diagnostics(
-        "sopro", "linux-x64", output_dir, root=tmp_path, env=environment
-    )
+    report = write_e2e_diagnostics.capture_diagnostics("sopro", "linux-x64", output_dir, root=tmp_path, env=environment)
 
     assert report["step_outcomes"] == {
         "voicefolio_cache": "success",
@@ -344,6 +342,346 @@ def test_merge_evidence_creates_manifest_even_when_no_platform_artifacts_exist(t
     assert manifest["matrix_job_result"] == "cancelled"
     assert (output_root / "README.md").is_file()
     assert (output_root / "manifest.json").is_file()
+
+
+def test_merge_evidence_accepts_every_default_engine(tmp_path):
+    from scripts.ci import merge_e2e_evidence
+    from scripts.ci.engine_matrix import DEFAULT_ENGINES
+
+    downloaded_root = tmp_path / "downloads"
+    for engine in DEFAULT_ENGINES:
+        artifact = downloaded_root / f"bookbench-{engine}-linux-x64-12345-1"
+        artifact.mkdir(parents=True)
+        (artifact / "README.md").write_text(f"{engine} evidence\n", encoding="utf-8")
+
+    for engine in DEFAULT_ENGINES:
+        output_root = tmp_path / "merged" / engine
+        manifest = merge_e2e_evidence.merge_evidence(engine, "12345", "1", downloaded_root, output_root, "success")
+        assert manifest["engine"] == engine
+        assert manifest["available_platforms"] == ["linux-x64"]
+
+
+def _make_pages_input_tree(
+    tmp_path,
+    *,
+    missing_engine=None,
+):
+    import hashlib
+    import json
+
+    from scripts.ci.engine_matrix import DEFAULT_ENGINES
+
+    input_root = tmp_path / "pages-input"
+    profiles_root = tmp_path / "profiles"
+    profiles_root.mkdir()
+    for engine in DEFAULT_ENGINES:
+        profile_id = hashlib.sha256(f"{engine}-profile".encode()).hexdigest()
+        target_id = f"{engine}-target"
+        profile_text = f'''default_role = "narrator"
+format = "renderprofile"
+profile_id = "sha256:{profile_id}"
+schema_version = 1
+
+[roles.narrator]
+language = "en-US"
+
+[roles.narrator.binding]
+renderer = "{engine}"
+target_id = "{target_id}"
+'''
+        if engine not in {"pocket", "sopro"}:
+            profile_text += f'voice = "{engine}-voice"\n'
+        else:
+            profile_text += """
+[roles.narrator.binding.options.voice_source]
+kind = "managed_reference"
+value = "kyutai-tts-voices:alba-mackenna/casual"
+dataset = "alba-mackenna"
+license = "CC-BY-4.0"
+resolver = "voicefolio"
+source_path = "alba-mackenna/casual.wav"
+"""
+        profile_bytes = profile_text.encode()
+        (profiles_root / f"{engine}.renderprofile.toml").write_bytes(profile_bytes)
+        original_sha = hashlib.sha256(profile_bytes).hexdigest()
+        variant = f"{engine}--{profile_id[:12]}"
+        if engine == missing_engine:
+            continue
+        artifact = input_root / f"bookbench-{engine}-linux-x64-12345-1"
+        run_id = f"gha-12345-1-{engine}-linux-x64"
+        run_dir = artifact / ".bookbench" / "runs" / run_id
+        exports = run_dir / "exports"
+        exports.mkdir(parents=True)
+        (exports / f"{engine}.listen.mp3").write_bytes(f"mp3-{engine}".encode())
+        result = {
+            "profile": engine,
+            "variant": variant,
+            "engines": [engine],
+            "status": "pass",
+            "export": f"/runner/work/bookbench/{run_id}/exports/{engine}.m4b",
+            "compound_wer": 0.0,
+            "wer": 0.0,
+            "cer": 0.0,
+            "word_boundary_match_count": 0,
+        }
+        (run_dir / "summary.json").write_text(
+            json.dumps({"run_id": run_id, "source": "/runner/work/private/fixture.md", "results": [result]}),
+            encoding="utf-8",
+        )
+        (run_dir / "profiles.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "candidate_label": engine,
+                        "profile_label": engine,
+                        "original_path": f"/runner/work/bookbench/profiles/{engine}.renderprofile.toml",
+                        "original_sha256": original_sha,
+                        "profile_id": f"sha256:{profile_id}",
+                        "variant_label": engine,
+                        "variant": variant,
+                        "engines": [engine],
+                        "targets": [{"engine_id": engine, "target_id": target_id}],
+                        "staged_path": f"/runner/work/private/{engine}.toml",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "versions.json").write_text(json.dumps({"voicerender": "0.2.3"}), encoding="utf-8")
+        (run_dir / "engines.json").write_text(
+            json.dumps(
+                {"selected_targets": [{"candidate_label": engine, "engine_id": engine, "target_id": target_id}]}
+            ),
+            encoding="utf-8",
+        )
+    return input_root, profiles_root
+
+
+def _pages_run_dir(input_root, engine):
+    run_id = f"gha-12345-1-{engine}-linux-x64"
+    return input_root / f"bookbench-{engine}-linux-x64-12345-1" / ".bookbench" / "runs" / run_id
+
+
+def _build_test_pages_site(input_root, profiles_root, output_root):
+    from scripts.ci.build_pages_site import build_pages_site
+
+    return build_pages_site(
+        input_root=input_root,
+        output_root=output_root,
+        repository="buchwandler/bookbench",
+        commit="a" * 40,
+        run_id="12345",
+        attempt="1",
+        profiles_root=profiles_root,
+    )
+
+
+def test_pages_builder_complete_valid_input_succeeds_and_sanitizes_output(tmp_path):
+    import json
+
+    from scripts.ci.engine_matrix import DEFAULT_ENGINES
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    output_root = _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+    manifest_text = (output_root / "gallery.json").read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert [sample["engine"] for sample in manifest["samples"]] == list(DEFAULT_ENGINES)
+    assert len(list((output_root / "samples").rglob("*.mp3"))) == len(DEFAULT_ENGINES)
+    assert {path.name for path in output_root.iterdir()} == {"index.html", "gallery.json", "assets", "samples"}
+    assert "/runner/work/" not in manifest_text
+    assert str(tmp_path) not in manifest_text
+    assert all("source_path" not in json.dumps(sample["bindings"]) for sample in manifest["samples"])
+    for engine in ("pocket", "sopro"):
+        sample = next(item for item in manifest["samples"] if item["engine"] == engine)
+        source = sample["bindings"][0]["voice_source"]
+        assert source["value"] == "kyutai-tts-voices:alba-mackenna/casual"
+        assert source["license"] == "CC-BY-4.0"
+        assert source["resolver"] == "voicefolio"
+    page = (output_root / "index.html").read_text(encoding="utf-8")
+    assert "voicefolio" in page  # resolver metadata is rendered from the tested profile
+    assert "/runner/work/" not in page
+
+
+def test_pages_builder_missing_engine_fails(tmp_path):
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path, missing_engine="sopro")
+    with pytest.raises(GalleryBuildError, match="missing expected engine artifact"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_duplicate_engine_fails(tmp_path):
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    duplicate = input_root / "bookbench-piper-linux-x64-12345-1-duplicate"
+    duplicate.mkdir()
+    with pytest.raises(GalleryBuildError, match="duplicate artifact for engine piper"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_failed_result_fails(tmp_path):
+    import json
+
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    run_dir = _pages_run_dir(input_root, "sopro")
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["results"][0]["status"] = "fail"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(GalleryBuildError, match="result is not pass"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+@pytest.mark.parametrize("audio_state", ("missing", "empty"))
+def test_pages_builder_missing_or_empty_audio_fails(tmp_path, audio_state):
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    audio_path = _pages_run_dir(input_root, "piper") / "exports" / "piper.listen.mp3"
+    if audio_state == "missing":
+        audio_path.unlink()
+        expected_error = "listening MP3 is missing or unsafe"
+    else:
+        audio_path.write_bytes(b"")
+        expected_error = "listening MP3 is empty"
+    with pytest.raises(GalleryBuildError, match=expected_error):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_mismatched_run_id_fails(tmp_path):
+    import json
+
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    run_dir = _pages_run_dir(input_root, "piper")
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["run_id"] = "gha-99999-1-piper-linux-x64"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(GalleryBuildError, match="BookBench run id does not match"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_profile_sha_mismatch_fails(tmp_path):
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    profile_path = profiles_root / "piper.renderprofile.toml"
+    profile_path.write_text(profile_path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    with pytest.raises(GalleryBuildError, match="SHA-256 differs from tested profile"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_traversal_profile_name_fails(tmp_path):
+    import json
+
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    run_dir = _pages_run_dir(input_root, "piper")
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["results"][0]["profile"] = "../x"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(GalleryBuildError, match="one safe path component"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+@pytest.mark.parametrize("tamper", ("profile_id", "engine"))
+def test_pages_builder_rejects_malformed_identity_and_engine_mismatch(tmp_path, tamper):
+    import json
+
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    run_dir = _pages_run_dir(input_root, "piper")
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    profiles_path = run_dir / "profiles.json"
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    if tamper == "profile_id":
+        profiles[0]["profile_id"] = "sha256:invalid"
+        expected_error = "profile id is missing or malformed"
+        profiles_path.write_text(json.dumps(profiles), encoding="utf-8")
+    else:
+        summary["results"][0]["engines"] = ["sopro"]
+        expected_error = "result engine does not match artifact engine"
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(GalleryBuildError, match=expected_error):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_rejects_symlinks_and_sample_size_over_limit(tmp_path, monkeypatch):
+    from scripts.ci import build_pages_site
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not follow", encoding="utf-8")
+    symlink_path = _pages_run_dir(input_root, "piper") / "outside-link"
+    try:
+        symlink_path.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    with pytest.raises(GalleryBuildError, match="contains a symlink"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "symlink-site")
+    symlink_path.unlink()
+
+    monkeypatch.setattr(build_pages_site, "MAX_SAMPLE_BYTES", 100)
+    audio_path = _pages_run_dir(input_root, "piper") / "exports" / "piper.listen.mp3"
+    audio_path.write_bytes(b"x" * 101)
+    with pytest.raises(GalleryBuildError, match="per-sample limit"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "large-site")
+
+
+def test_pages_builder_size_guard_preserves_existing_output(tmp_path, monkeypatch):
+    from scripts.ci import build_pages_site
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    output_root = tmp_path / "site"
+    output_root.mkdir()
+    (output_root / "index.html").write_text("last known good", encoding="utf-8")
+    monkeypatch.setattr(build_pages_site, "MAX_SITE_BYTES", 1)
+    with pytest.raises(GalleryBuildError, match="generated site exceeds"):
+        _build_test_pages_site(input_root, profiles_root, output_root)
+    assert (output_root / "index.html").read_text(encoding="utf-8") == "last known good"
+
+
+@pytest.mark.parametrize("missing_file", ("summary.json", "profiles.json"))
+def test_pages_builder_missing_required_metadata_fails(tmp_path, missing_file):
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    (_pages_run_dir(input_root, "piper") / missing_file).unlink()
+    with pytest.raises(GalleryBuildError, match=f"{missing_file} is missing"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_total_sample_budget_fails_closed(tmp_path, monkeypatch):
+    from scripts.ci import build_pages_site
+    from scripts.ci.build_pages_site import GalleryBuildError
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    monkeypatch.setattr(build_pages_site, "MAX_TOTAL_SAMPLE_BYTES", 10)
+    with pytest.raises(GalleryBuildError, match="total sample payload exceeds"):
+        _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+
+
+def test_pages_builder_discovers_artifacts_with_upload_root_stripping_bookbench(tmp_path):
+    from scripts.ci.engine_matrix import DEFAULT_ENGINES
+
+    input_root, profiles_root = _make_pages_input_tree(tmp_path)
+    for engine in DEFAULT_ENGINES:
+        artifact = input_root / f"bookbench-{engine}-linux-x64-12345-1"
+        (artifact / ".bookbench" / "runs").rename(artifact / "runs")
+        (artifact / ".bookbench").rmdir()
+    output_root = _build_test_pages_site(input_root, profiles_root, tmp_path / "site")
+    assert (output_root / "gallery.json").is_file()
 
 
 def test_e2e_summary_links_platform_and_merged_artifacts(tmp_path):
@@ -509,7 +847,6 @@ def test_engine_runtime_probe_uses_engine_specific_import_requirements(engine, m
     assert report["ok"] is True
     assert set(imported) == {"pipersynth", "onnxvoice", "onnxruntime", "piperg2p"}
     assert "huggingface_hub" not in imported
-
 
 
 def test_inflect_runtime_probe_accepts_explicit_espeak_path(tmp_path, monkeypatch):
@@ -713,9 +1050,7 @@ def test_engine_ci_metadata_separates_default_matrix_from_qwen_infrastructure():
         ("qwen3", "qwen3:base-0.6b", "int4"),
     ),
 )
-def test_ensure_engine_asset_installs_and_reverifies_cache_miss(
-    engine, model_ref, quality, tmp_path
-):
+def test_ensure_engine_asset_installs_and_reverifies_cache_miss(engine, model_ref, quality, tmp_path):
     from scripts.ci import ensure_engine_assets
 
     calls = []
@@ -765,9 +1100,7 @@ def test_ensure_engine_asset_cache_hit_and_failure_evidence_are_non_secret(tmp_p
     returncodes = iter((1, 1))
 
     def failed_run(command, **kwargs):
-        return subprocess.CompletedProcess(
-            command, next(returncodes), "", "authorization=hf_fake_token_abcdef"
-        )
+        return subprocess.CompletedProcess(command, next(returncodes), "", "authorization=hf_fake_token_abcdef")
 
     failure = ensure_engine_assets.ensure_engine_asset("sopro", runner=failed_run, env=environment)
     failure_json = ensure_engine_assets.write_report(failure)
@@ -849,7 +1182,7 @@ def test_prepare_reference_voice_verification_failure_is_redacted(tmp_path):
 
     profile = tmp_path / "pocket.renderprofile.toml"
     profile.write_text(
-        '[roles.narrator.binding.options.voice_source]\n'
+        "[roles.narrator.binding.options.voice_source]\n"
         'kind = "managed_reference"\n'
         'resolver = "voicefolio"\n'
         'value = "kyutai-tts-voices:alba-mackenna/casual"\n',
@@ -891,7 +1224,7 @@ def test_prepare_reference_voice_offline_miss_and_unknown_reference_fail_closed(
 
     profile = tmp_path / "pocket.renderprofile.toml"
     profile.write_text(
-        '[roles.narrator.binding.options.voice_source]\n'
+        "[roles.narrator.binding.options.voice_source]\n"
         'kind = "managed_reference"\n'
         'resolver = "voicefolio"\n'
         'value = "kyutai-tts-voices:alba-mackenna/casual"\n',
@@ -921,7 +1254,7 @@ def test_prepare_reference_voice_offline_miss_and_unknown_reference_fail_closed(
 
     resolver_called = False
     profile.write_text(
-        '[roles.narrator.binding.options.voice_source]\n'
+        "[roles.narrator.binding.options.voice_source]\n"
         'kind = "managed_reference"\n'
         'resolver = "voicefolio"\n'
         'value = "kyutai-tts-voices:missing"\n',
@@ -963,9 +1296,7 @@ def test_prepare_reference_voice_skips_profiles_without_managed_references(tmp_p
         "piper",
         profile,
         validator=lambda _source: (_ for _ in ()).throw(AssertionError("unexpected validation")),
-        resolver=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("unexpected resolution")
-        ),
+        resolver=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected resolution")),
     )
     assert report["status"] == "not_applicable"
     assert report["references"] == []

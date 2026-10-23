@@ -117,16 +117,11 @@ def _component_result(module_name: str, distribution_name: str) -> dict[str, Any
     return {"status": status, "error": {"type": error_type, "message": _safe_message(message)}}
 
 
-
 EXECUTABLE_PROBE_TIMEOUT = 10
 
 
 def _executable_result(requirement: RuntimeExecutable) -> dict[str, Any]:
-    configured_path = (
-        os.environ.get(requirement.env_var)
-        if requirement.env_var is not None
-        else None
-    )
+    configured_path = os.environ.get(requirement.env_var) if requirement.env_var is not None else None
     if requirement.env_var is not None and requirement.env_var in os.environ:
         path = configured_path
         source = requirement.env_var
@@ -207,6 +202,7 @@ def _executable_result(requirement: RuntimeExecutable) -> dict[str, Any]:
         }
     return {"status": "ready", "path": path, "source": source}
 
+
 def check_engine_runtime(engine: str) -> dict[str, Any]:
     if engine not in ENGINE_COMPONENTS:
         raise ValueError(f"unsupported engine: {engine}")
@@ -214,10 +210,7 @@ def check_engine_runtime(engine: str) -> dict[str, Any]:
         module_name: _component_result(module_name, distribution_name)
         for module_name, distribution_name in ENGINE_COMPONENTS[engine]
     }
-    executables = {
-        requirement.command: _executable_result(requirement)
-        for requirement in ENGINE_EXECUTABLES[engine]
-    }
+    executables = {requirement.command: _executable_result(requirement) for requirement in ENGINE_EXECUTABLES[engine]}
     return {
         "engine": engine,
         "ok": all(component["status"] == "ready" for component in components.values())

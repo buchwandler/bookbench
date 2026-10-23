@@ -1,6 +1,6 @@
 default_role = "narrator"
 format = "renderprofile"
-profile_id = "sha256:525856299523199f450d4955fede32f6392aa6bbbcb88dd54ad094feb0278e47"
+profile_id = "sha256:d3873ffdd3bc2d7267c1ff86e81334385a26de3ca2cd8738c1d5f3a0615cfccd"
 schema_version = 1
 
 [pauses]
@@ -20,15 +20,15 @@ language = "en-US"
 
 [roles.narrator.binding]
 renderer = "piper"
-target_id = "en_US-amy-medium"
-voice = "en_US-amy-medium"
+target_id = "en_US-ljspeech-medium"
+voice = "en_US-ljspeech-medium"
 
 [roles.narrator.binding.options]
 
 [roles.narrator.binding.renderer_metadata]
 frontend = "pipersynth"
 pronunciation = "pipersynth.ipa"
-source_revision = "c10ece1aade47bb51c153c893d14e5bf8e5b7117"
+source_revision = "5041a7a49ae5b3a0f30e6837769eb03fdbb231bd"
 
 [roles.narrator.requirements]
 frontend = "pipersynth"

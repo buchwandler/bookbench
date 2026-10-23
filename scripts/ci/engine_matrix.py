@@ -33,9 +33,7 @@ ENGINE_CI: tuple[EngineCI, ...] = (
             ("onnxruntime", "onnxruntime"),
             ("huggingface_hub", "huggingface-hub"),
         ),
-        runtime_executables=(
-            RuntimeExecutable("espeak-ng", env_var="ESPEAKNG_RUNTIME_EXECUTABLE"),
-        ),
+        runtime_executables=(RuntimeExecutable("espeak-ng", env_var="ESPEAKNG_RUNTIME_EXECUTABLE"),),
     ),
     EngineCI(
         "kitten",
@@ -102,9 +100,7 @@ ENGINE_COMPONENTS: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
 ENGINE_EXECUTABLES: Mapping[str, tuple[RuntimeExecutable, ...]] = MappingProxyType(
     {engine.id: engine.runtime_executables for engine in ENGINE_CI}
 )
-ENGINE_PACKAGES: Mapping[str, str] = MappingProxyType(
-    {engine.id: engine.distribution for engine in ENGINE_CI}
-)
+ENGINE_PACKAGES: Mapping[str, str] = MappingProxyType({engine.id: engine.distribution for engine in ENGINE_CI})
 ENGINE_ASSETS: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
         engine.id: (engine.model_ref, engine.model_quality)

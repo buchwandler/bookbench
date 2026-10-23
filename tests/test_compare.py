@@ -60,6 +60,10 @@ def test_listening_report(tmp_path):
     )
     assert "subjective voice-quality scores" in text
 
+    assert 'document.querySelectorAll("audio")' in text
+    assert "if (audio !== event.target) audio.pause();" in text
+    assert "event.target instanceof HTMLAudioElement" in text
+
 
 def test_listening_report_orders_candidates_and_escapes_failure_details(tmp_path):
     results = [

@@ -88,7 +88,6 @@ def _package_version(name: str) -> str | None:
         return None
 
 
-
 def _is_file(path: str | None) -> bool:
     if not path:
         return False
@@ -151,8 +150,6 @@ def capture_diagnostics(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             engine_runtime_ok = "unreadable"
 
-
-
     asset_path = output_dir / "engine-assets.json"
     engine_asset_status: str | None = None
     engine_asset_cache_hit: bool | None = None
@@ -168,7 +165,6 @@ def capture_diagnostics(
                 engine_asset_status = "unreadable"
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             engine_asset_status = "unreadable"
-
 
     reference_path = output_dir / "reference-voice.json"
     reference_voice_status: str | None = None
